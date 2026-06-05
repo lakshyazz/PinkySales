@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
@@ -205,7 +206,7 @@ app.post('/api/shops', authenticateToken, requireSuperAdmin, async (req, res) =>
   const result = await runQuery('INSERT INTO shops (name, area, address, phone) VALUES (?, ?, ?, ?)', [name, area, address || '', phone || '']);
   const products = await allRecords('SELECT id FROM products');
   for (const product of products) {
-    await runQuery('INSERT OR IGNORE INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0)', [result.id, product.id]);
+    await runQuery('INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0) ON CONFLICT(shop_id, product_id) DO NOTHING', [result.id, product.id]);
   }
   await audit(req, 'Created shop', 'shop', result.id, name);
   res.status(201).json({ id: result.id, name, area, address, phone });
@@ -258,7 +259,7 @@ app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res)
   );
   const shops = await allRecords('SELECT id FROM shops');
   for (const shop of shops) {
-    await runQuery('INSERT OR IGNORE INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0)', [shop.id, result.id]);
+    await runQuery('INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0) ON CONFLICT(shop_id, product_id) DO NOTHING', [shop.id, result.id]);
   }
   await audit(req, 'Created product and official price', 'product', result.id, `${name} at ${official_price}`);
   res.status(201).json({ id: result.id, name, brand, category, official_price, description });
@@ -508,14 +509,14 @@ app.get('/api/catalog', async (req, res) => {
   const { shopId, search = '', brand = '', min = 0, max = 9999999 } = req.query;
   const rows = await allRecords(`
     SELECT p.id, p.name, p.brand, p.category, p.official_price, p.description,
-      GROUP_CONCAT(CASE WHEN st.quantity > 0 THEN sh.name || ' (' || st.quantity || ')' END, ', ') AS available_shops,
+      STRING_AGG(CASE WHEN st.quantity > 0 THEN sh.name || ' (' || st.quantity || ')' END, ', ') AS available_shops,
       COALESCE(SUM(st.quantity), 0) AS total_available
     FROM products p
     LEFT JOIN stock st ON st.product_id = p.id ${shopId ? 'AND st.shop_id = ?' : ''}
     LEFT JOIN shops sh ON sh.id = st.shop_id
     WHERE p.is_active = 1
       AND p.name IS NOT NULL
-      AND (p.name LIKE ? OR p.brand LIKE ?)
+      AND (p.name ILIKE ? OR p.brand ILIKE ?)
       AND (? = '' OR p.brand = ?)
       AND p.official_price BETWEEN ? AND ?
     GROUP BY p.id
