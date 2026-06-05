@@ -104,7 +104,7 @@ const initialForms = {
   product: { name: '', brand: '', category: 'Display', official_price: '', opening_stock: '', description: '' },
   stock: { product_id: '', quantity: '' },
   customer: { name: '', mobile: '', address: '', notes: '' },
-  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', due_date: '2026-06-15', notes: '' },
+  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', due_date: '2026-06-15', notes: '', items: [{ product_id: '', quantity: 1, total_amount: '' }] },
   payment: { sale_id: '', amount: '', note: '' },
   request: { product_id: '', model_name: '', quantity: 1, message: '' },
   transfer: { from_shop_id: '', to_shop_id: '', product_id: '', quantity: '', note: '' },
@@ -645,43 +645,146 @@ function App() {
     return Number(stockItem?.official_price || product?.official_price || 0);
   };
 
-  const updateSaleProduct = (productId) => {
-    const quantity = Math.max(Number(forms.sale.quantity || 1), 1);
+  const updateSaleItemProduct = (index, productId) => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    const qty = Math.max(Number(currentItems[index]?.quantity || 1), 1);
     const price = salePriceFor(productId);
+    
+    currentItems[index] = {
+      product_id: productId,
+      quantity: qty,
+      total_amount: price ? String(price * qty) : (currentItems[index]?.total_amount || ''),
+    };
+
+    const totalSum = currentItems.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+
     setForms({
       ...forms,
       sale: {
         ...forms.sale,
-        product_id: productId,
-        total_amount: price ? String(price * quantity) : forms.sale.total_amount,
+        product_id: currentItems[0]?.product_id || '',
+        quantity: currentItems[0]?.quantity || 1,
+        total_amount: String(totalSum),
+        items: currentItems,
       },
     });
   };
 
-  const updateSaleQuantity = (quantity) => {
+  const updateSaleItemQuantity = (index, quantity) => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
     const numericQuantity = Math.max(Number(quantity || 0), 0);
-    const price = salePriceFor(forms.sale.product_id);
+    const price = salePriceFor(currentItems[index]?.product_id);
+
+    currentItems[index] = {
+      ...currentItems[index],
+      quantity,
+      total_amount: price && numericQuantity ? String(price * numericQuantity) : (currentItems[index]?.total_amount || ''),
+    };
+
+    const totalSum = currentItems.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+
     setForms({
       ...forms,
       sale: {
         ...forms.sale,
-        quantity,
-        total_amount: price && numericQuantity ? String(price * numericQuantity) : forms.sale.total_amount,
+        quantity: currentItems[0]?.quantity || 1,
+        total_amount: String(totalSum),
+        items: currentItems,
+      },
+    });
+  };
+
+  const updateSaleItemPrice = (index, priceVal) => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    currentItems[index] = {
+      ...currentItems[index],
+      total_amount: priceVal,
+    };
+    const totalSum = currentItems.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+    setForms({
+      ...forms,
+      sale: {
+        ...forms.sale,
+        total_amount: String(totalSum),
+        items: currentItems,
+      },
+    });
+  };
+
+  const addSaleItem = () => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    currentItems.push({ product_id: '', quantity: 1, total_amount: '' });
+    setForms({
+      ...forms,
+      sale: {
+        ...forms.sale,
+        items: currentItems,
+      },
+    });
+  };
+
+  const removeSaleItem = (index) => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    if (currentItems.length <= 1) return;
+    currentItems.splice(index, 1);
+    const totalSum = currentItems.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+    setForms({
+      ...forms,
+      sale: {
+        ...forms.sale,
+        product_id: currentItems[0]?.product_id || '',
+        quantity: currentItems[0]?.quantity || 1,
+        total_amount: String(totalSum),
+        items: currentItems,
       },
     });
   };
 
   const submitSale = async (reloadTab = active) => {
     if (!requireShopSelection('Select a shop before creating a sale')) return;
-    const quantity = Number(forms.sale.quantity);
-    if (!forms.sale.product_id || !forms.sale.customer_id || !Number.isInteger(quantity) || quantity <= 0 || !forms.sale.total_amount) {
-      return showToast('Choose customer, product, quantity, and amount');
+    
+    const customerId = forms.sale.customer_id;
+    const dueDate = forms.sale.due_date;
+    const notes = forms.sale.notes;
+    const items = forms.sale.items || [{ product_id: forms.sale.product_id, quantity: Number(forms.sale.quantity), total_amount: Number(forms.sale.total_amount) }];
+    
+    if (!customerId || !items.length || items.some(i => !i.product_id || !i.quantity || i.quantity <= 0 || !i.total_amount)) {
+      return showToast('Choose customer, items, quantities, and prices');
     }
+
     try {
       setSaving(true);
-      await authedFetch('/sales', { method: 'POST', body: JSON.stringify({ ...forms.sale, shop_id: shopId }) });
-      setForms((prev) => ({ ...prev, sale: initialForms.sale }));
-      showToast('Sale created, stock reduced, pending updated');
+      let remainingPaid = Number(forms.sale.paid_amount || 0);
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const itemTotal = Number(item.total_amount);
+        const itemPaid = Math.min(remainingPaid, itemTotal);
+        remainingPaid -= itemPaid;
+
+        await authedFetch('/sales', {
+          method: 'POST',
+          body: JSON.stringify({
+            shop_id: shopId,
+            product_id: item.product_id,
+            customer_id: customerId,
+            quantity: item.quantity,
+            total_amount: String(itemTotal),
+            paid_amount: String(itemPaid),
+            due_date: dueDate,
+            notes: notes,
+          }),
+        });
+      }
+
+      setForms((prev) => ({
+        ...prev,
+        sale: {
+          ...initialForms.sale,
+          items: [{ product_id: '', quantity: 1, total_amount: '' }],
+        },
+      }));
+      showToast('Sales created, stock reduced, pending updated');
       await loadTab(reloadTab, shopId);
     } catch (error) {
       showToast(error.message || 'Unable to create sale right now');
@@ -1244,10 +1347,49 @@ function App() {
                   <Input label="Notes" value={forms.customer.notes} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, notes: v } })} />
                 </FormPanel>
                 <FormPanel title="Record customer purchase" action={saving ? 'Saving...' : 'Add transaction'} onSubmit={() => submitSale('customers')} disabled={saving || needsSpecificShop}>
-                  <Select label="Customer" value={forms.sale.customer_id} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, customer_id: v } })} options={data.customers.map((c) => [c.id, c.name])} />
-                  <Select label="Item bought" value={forms.sale.product_id} onChange={updateSaleProduct} options={data.stock.filter((s) => s.quantity > 0).map((p) => [p.product_id, `${p.name} · ${p.quantity} pcs left`])} />
-                  <Input label="Quantity" type="number" value={forms.sale.quantity} onChange={updateSaleQuantity} />
-                  <Input label="Total price" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
+                  <div style={{ gridColumn: '1 / -1', display: 'grid', gap: '16px' }}>
+                    <Select label="Customer" value={forms.sale.customer_id} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, customer_id: v } })} options={data.customers.map((c) => [c.id, c.name])} />
+                    
+                    <div className="border border-slate-100 rounded-2xl p-5 bg-slate-50/30 space-y-4">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Items Purchased</span>
+                      {(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }]).map((item, idx) => (
+                        <div key={idx} className="flex items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
+                          <div className="flex-1">
+                            <Select 
+                              label="Item bought" 
+                              value={item.product_id} 
+                              onChange={(v) => updateSaleItemProduct(idx, v)} 
+                              options={data.stock.filter((s) => s.quantity > 0 || String(s.product_id) === String(item.product_id)).map((p) => [p.product_id, `${p.name} · ${p.quantity} pcs left`])} 
+                            />
+                          </div>
+                          <div style={{ width: '120px' }}>
+                            <Input label="Quantity" type="number" value={item.quantity} onChange={(v) => updateSaleItemQuantity(idx, v)} />
+                          </div>
+                          <div style={{ width: '160px' }}>
+                            <Input label="Total price" type="number" value={item.total_amount} onChange={(v) => updateSaleItemPrice(idx, v)} />
+                          </div>
+                          {(forms.sale.items || []).length > 1 && (
+                            <button 
+                              type="button" 
+                              className="soft !min-h-[48px] !px-3 text-red-600 hover:text-red-800 border-red-200 hover:border-red-300"
+                              onClick={() => removeSaleItem(idx)}
+                            >
+                              <X size={16} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button 
+                        type="button" 
+                        className="soft !px-4 !py-2 text-xs font-bold mt-2" 
+                        onClick={addSaleItem}
+                      >
+                        + Add Another Display/Item
+                      </button>
+                    </div>
+                  </div>
+
+                  <Input label="Total bill amount (Auto-calculated)" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
                   <Input label="Paid now" type="number" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
                   <Input label="Due date" type="date" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
                 </FormPanel>
@@ -1281,10 +1423,49 @@ function App() {
             <PageWrapper activeKey="sales" key="sales">
               <section className="space">
                 <FormPanel title="Create sale" action="Create sale" onSubmit={() => submitSale('sales')}>
-                  <Select label="Product" value={forms.sale.product_id} onChange={updateSaleProduct} options={data.stock.filter((s) => s.quantity > 0).map((p) => [p.product_id, `${p.name} · ${p.quantity} pcs left`])} />
-                  <Select label="Customer" value={forms.sale.customer_id} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, customer_id: v } })} options={data.customers.map((c) => [c.id, c.name])} />
-                  <Input label="Quantity" type="number" value={forms.sale.quantity} onChange={updateSaleQuantity} />
-                  <Input label="Total amount" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
+                  <div style={{ gridColumn: '1 / -1', display: 'grid', gap: '16px' }}>
+                    <Select label="Customer" value={forms.sale.customer_id} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, customer_id: v } })} options={data.customers.map((c) => [c.id, c.name])} />
+                    
+                    <div className="border border-slate-100 rounded-2xl p-5 bg-slate-50/30 space-y-4">
+                      <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Items Purchased</span>
+                      {(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }]).map((item, idx) => (
+                        <div key={idx} className="flex items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
+                          <div className="flex-1">
+                            <Select 
+                              label="Item bought" 
+                              value={item.product_id} 
+                              onChange={(v) => updateSaleItemProduct(idx, v)} 
+                              options={data.stock.filter((s) => s.quantity > 0 || String(s.product_id) === String(item.product_id)).map((p) => [p.product_id, `${p.name} · ${p.quantity} pcs left`])} 
+                            />
+                          </div>
+                          <div style={{ width: '120px' }}>
+                            <Input label="Quantity" type="number" value={item.quantity} onChange={(v) => updateSaleItemQuantity(idx, v)} />
+                          </div>
+                          <div style={{ width: '160px' }}>
+                            <Input label="Total price" type="number" value={item.total_amount} onChange={(v) => updateSaleItemPrice(idx, v)} />
+                          </div>
+                          {(forms.sale.items || []).length > 1 && (
+                            <button 
+                              type="button" 
+                              className="soft !min-h-[48px] !px-3 text-red-600 hover:text-red-800 border-red-200 hover:border-red-300"
+                              onClick={() => removeSaleItem(idx)}
+                            >
+                              <X size={16} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      <button 
+                        type="button" 
+                        className="soft !px-4 !py-2 text-xs font-bold mt-2" 
+                        onClick={addSaleItem}
+                      >
+                        + Add Another Display/Item
+                      </button>
+                    </div>
+                  </div>
+
+                  <Input label="Total bill amount (Auto-calculated)" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
                   <Input label="Paid amount" type="number" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
                   <Input label="Due date" type="date" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
                 </FormPanel>
