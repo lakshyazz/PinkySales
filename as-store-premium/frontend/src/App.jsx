@@ -29,7 +29,7 @@ import {
   X,
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
 const api = async (path, options = {}, token = '') => {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -1514,7 +1514,7 @@ function App() {
                     <Store className="w-6 h-6 text-teal" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <span className="text-[10px] uppercase font-black text-brand-accent tracking-widest leading-none block">Shop Performance Analytics</span>
+                    <span className="text-[10px] uppercase font-black text-brand-accent tracking-widest leading-none block mb-1">Shop Performance Analytics</span>
                     {isEditingShop ? (
                       <form onSubmit={handleSaveShopEdit} className="space-y-3 mt-3" onKeyDown={handleFormKeyDown}>
                         <div className="grid grid-cols-2 gap-3">
@@ -1560,14 +1560,14 @@ function App() {
                       </form>
                     ) : (
                       <>
-                        <h2 id="details-title" className="text-2xl font-black tracking-tight text-slate-800 mt-1">
+                        <h2 id="details-title" className="text-2xl font-black tracking-tight text-slate-800 mt-2 mb-1.5">
                           {data.shops.find(s => String(s.id) === String(detailedShopId))?.name || 'Branch Progress'}
                         </h2>
-                        <p className="text-slate-500 text-xs mt-1 truncate">
+                        <p className="text-slate-500 text-xs mt-1.5 mb-4 truncate">
                           📍 {data.shops.find(s => String(s.id) === String(detailedShopId))?.area} · {data.shops.find(s => String(s.id) === String(detailedShopId))?.address || 'No Address Listed'}
                           {data.shops.find(s => String(s.id) === String(detailedShopId))?.phone && ` · 📞 ${data.shops.find(s => String(s.id) === String(detailedShopId))?.phone}`}
                         </p>
-                        <div className="flex gap-2 mt-3">
+                        <div className="flex gap-2.5 mt-4">
                           <button type="button" className="soft !px-3 !py-1.5 !min-h-[30px] text-xs font-bold" onClick={() => setIsEditingShop(true)}>Edit Shop</button>
                           <button type="button" className="soft !px-3 !py-1.5 !min-h-[30px] text-xs font-bold !text-rose-600 hover:!bg-rose-50 hover:!border-rose-200" onClick={handleDeleteShop}>Delete Shop</button>
                         </div>

@@ -245,7 +245,7 @@ app.post('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, r
   if (!username || !password || !name || !shop_id) return res.status(400).json({ error: 'Username, password, name and shop are required.' });
   const hash = await bcrypt.hash(password, 10);
   const result = await runQuery(
-    'INSERT INTO users (username, password, role, name, contact, shop_id) VALUES (?, ?, "shopkeeper", ?, ?, ?)',
+    "INSERT INTO users (username, password, role, name, contact, shop_id) VALUES (?, ?, 'shopkeeper', ?, ?, ?)",
     [username, hash, name, contact || '', shop_id]
   );
   await audit(req, 'Created shopkeeper', 'user', result.id, name);
@@ -559,11 +559,11 @@ app.get('/api/reports', authenticateToken, requireShopStaff, async (req, res) =>
     ORDER BY p.name, sh.name
   `, shopId ? [shopId] : []);
   const auditRows = req.user.role === 'shopkeeper'
-    ? await allRecords('SELECT * FROM audit_logs WHERE actor_id = ? AND action = "Created sale" ORDER BY id DESC LIMIT 25', [req.user.id])
+    ? await allRecords("SELECT * FROM audit_logs WHERE actor_id = ? AND action = 'Created sale' ORDER BY id DESC LIMIT 25", [req.user.id])
     : await allRecords('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 25');
   res.json({ pendingByShop, availability, auditRows });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] Multi-shop API is live on http://localhost:${PORT}`);
 });
