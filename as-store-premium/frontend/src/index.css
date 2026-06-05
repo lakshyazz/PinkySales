@@ -961,9 +961,8 @@ button:disabled {
   width: 42px;
   height: 42px;
   border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   flex-shrink: 0;
   background: rgba(13, 148, 136, 0.08);
   color: var(--teal);
@@ -972,7 +971,9 @@ button:disabled {
   margin-bottom: 14px;
 }
 .card-icon-wrapper svg {
-  margin-top: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: block !important;
   color: inherit !important;
   filter: none !important;
 }
