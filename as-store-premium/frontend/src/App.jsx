@@ -1436,14 +1436,42 @@ function App() {
                       initial="hidden"
                       whileInView="visible"
                       viewport={{ once: true, margin: "-10px" }}
-                      className="table"
+                      className="performance-list"
                     >
                       {data.dashboard.shopWise.map((shop) => (
-                        <motion.div variants={itemVariants} className="row" key={shop.id}>
-                          <span><b>{shop.name}</b><small>{shop.area}</small></span>
-                          <span>{shop.stock} pcs</span>
-                          <span>{currency(shop.pending)}</span>
-                          <strong>{currency(shop.sales_today)}</strong>
+                        <motion.div 
+                          variants={itemVariants} 
+                          className="performance-item" 
+                          key={shop.id}
+                          whileHover={{ y: -2 }}
+                        >
+                          <div className="performance-shop-info">
+                            <div className="performance-shop-icon">
+                              <Store size={18} />
+                            </div>
+                            <div className="performance-shop-name">
+                              <b>{shop.name}</b>
+                              <small>{shop.area}</small>
+                            </div>
+                          </div>
+                          <div className="performance-metrics-grid">
+                            <div className="performance-metric">
+                              <span className="metric-label">Stock</span>
+                              <span className="metric-value">{shop.stock} pcs</span>
+                            </div>
+                            <div className="performance-metric">
+                              <span className="metric-label">Pending</span>
+                              <span className={`metric-value ${Number(shop.pending) > 0 ? 'text-rose-600 font-bold' : ''}`}>
+                                {currency(shop.pending)}
+                              </span>
+                            </div>
+                            <div className="performance-metric highlight">
+                              <span className="metric-label">Sales Today</span>
+                              <strong className="metric-value text-teal">
+                                {currency(shop.sales_today)}
+                              </strong>
+                            </div>
+                          </div>
                         </motion.div>
                       ))}
                     </motion.div>
