@@ -1438,7 +1438,7 @@ function App() {
                       viewport={{ once: true, margin: "-10px" }}
                       className="performance-list"
                     >
-                      {data.dashboard.shopWise.map((shop) => (
+                      {data.dashboard.shopWise.length ? data.dashboard.shopWise.map((shop) => (
                         <motion.div 
                           variants={itemVariants} 
                           className="performance-item" 
@@ -1473,7 +1473,7 @@ function App() {
                             </div>
                           </div>
                         </motion.div>
-                      ))}
+                      )) : <Empty title="No shops registered yet" />}
                     </motion.div>
                   </section>
                   <section className="panel">
@@ -1483,13 +1483,27 @@ function App() {
                       initial="hidden"
                       whileInView="visible"
                       viewport={{ once: true, margin: "-10px" }}
-                      className="table"
+                      className="alert-list"
                     >
                       {data.dashboard.lowStock.length ? data.dashboard.lowStock.map((item) => (
-                        <motion.div variants={itemVariants} className="alert-row" key={item.id}>
-                          <AlertTriangle size={17} />
-                          <span><b>{item.product_name}</b><small>{item.shop_name}</small></span>
-                          <strong className="status-badge low-stock">{item.quantity} left</strong>
+                        <motion.div 
+                          variants={itemVariants} 
+                          className="alert-item" 
+                          key={item.id}
+                          whileHover={{ y: -2 }}
+                        >
+                          <div className="alert-item-info">
+                            <div className={`alert-item-icon ${item.quantity <= 1 ? 'critical' : 'warning'}`}>
+                              <AlertTriangle size={17} />
+                            </div>
+                            <div className="alert-item-details">
+                              <b>{item.product_name}</b>
+                              <small>{item.shop_name} · {item.brand || 'No Brand'}</small>
+                            </div>
+                          </div>
+                          <span className={`alert-badge ${item.quantity <= 1 ? 'critical' : 'warning'}`}>
+                            {item.quantity} left
+                          </span>
                         </motion.div>
                       )) : <Empty title="No low stock items" />}
                     </motion.div>
@@ -1524,12 +1538,24 @@ function App() {
                   onItemClick={role === 'superadmin' ? viewShopDetails : null}
                   render={(shop) => (
                     <>
-                      <div className="card-icon-wrapper">
-                        <Store size={18} />
+                      <div className="flex items-start justify-between w-full mb-3">
+                        <div className="card-icon-wrapper !mb-0">
+                          <Store size={18} />
+                        </div>
+                        <span className="status-badge stock-ok">Active Branch</span>
                       </div>
-                      <h3>{shop.name}</h3>
-                      <p>{shop.area}</p>
-                      <div className="metrics"><span>{shop.stock} pcs</span><span>{currency(shop.pending)}</span></div>
+                      <h3 className="text-lg font-bold text-slate-800 mb-1">{shop.name}</h3>
+                      <p className="text-xs text-slate-500 flex items-center gap-1 mb-4">📍 {shop.area}</p>
+                      <div className="metrics w-full pt-3 border-t border-slate-100 flex justify-between text-xs font-semibold">
+                        <div className="flex flex-col">
+                          <span className="text-[10px] text-slate-400 uppercase font-black">Stock Qty</span>
+                          <span className="text-slate-700 font-bold mt-0.5">{shop.stock} pcs</span>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-[10px] text-slate-400 uppercase font-black">Pending Payments</span>
+                          <span className={`font-bold mt-0.5 ${Number(shop.pending) > 0 ? 'text-rose-600' : 'text-slate-700'}`}>{currency(shop.pending)}</span>
+                        </div>
+                      </div>
                     </>
                   )} 
                 />
@@ -1566,13 +1592,31 @@ function App() {
                     viewport={{ once: true, margin: "-10px" }}
                     className="table panel"
                   >
-                    {data.shopkeepers.map((user) => (
-                      <motion.div variants={itemVariants} className="row" key={user.id}>
-                        <span><b>{user.name}</b><small>@{user.username}</small></span>
-                        <span>{user.contact}</span>
-                        <strong>{user.shop_name}</strong>
-                      </motion.div>
-                    ))}
+                    {data.shopkeepers.map((user) => {
+                      const initials = user.name ? user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'SK';
+                      return (
+                        <motion.div variants={itemVariants} className="row" key={user.id}>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center font-bold text-sm shrink-0">
+                              {initials}
+                            </div>
+                            <span><b>{user.name}</b><small>@{user.username}</small></span>
+                          </div>
+                          <span>
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Contact</span>
+                            <span className="flex items-center gap-1.5 text-sm text-slate-600 font-medium">📞 {user.contact}</span>
+                          </span>
+                          <span>
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Assigned Shop</span>
+                            <span className="flex items-center gap-1.5 text-sm text-slate-800 font-bold">🏪 {user.shop_name}</span>
+                          </span>
+                          <div className="flex flex-col items-end">
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-1">Access Role</span>
+                            <span className="status-badge paid">Branch Staff</span>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
                   </motion.div>
                 ) : (
                   <Empty title="No shopkeepers registered yet" />
@@ -1596,12 +1640,18 @@ function App() {
                 )}
                 <CardGrid items={data.products} render={(product) => (
                   <>
-                    <div className="card-icon-wrapper indigo">
-                      <IndianRupee size={18} />
+                    <div className="flex items-start justify-between w-full mb-3">
+                      <div className="card-icon-wrapper indigo !mb-0">
+                        <IndianRupee size={18} />
+                      </div>
+                      <span className="status-badge stock-ok">{product.category}</span>
                     </div>
-                    <h3>{product.name}</h3>
-                    <p>{product.brand} · {product.category}</p>
-                    <strong>{currency(product.official_price)}</strong>
+                    <h3 className="text-lg font-bold text-slate-800 mb-1">{product.name}</h3>
+                    <p className="text-xs text-slate-500 mb-4">{product.brand}</p>
+                    <div className="w-full pt-3 border-t border-slate-100 flex items-center justify-between">
+                      <span className="text-[10px] text-slate-400 uppercase font-black">Official Price</span>
+                      <strong className="text-teal font-extrabold text-base">{currency(product.official_price)}</strong>
+                    </div>
                   </>
                 )} />
               </section>
@@ -1644,19 +1694,27 @@ function App() {
                       className="panel card model-card" 
                       key={product.id}
                     >
-                      <div className="model-head">
-                        <div className="model-mark">
-                          <Smartphone size={20} />
+                      <div className="flex items-start justify-between w-full mb-3">
+                        <div className="card-icon-wrapper cyan !mb-0">
+                          <Smartphone size={18} />
                         </div>
                         <span className="status-badge stock-ok">{product.category}</span>
                       </div>
-                      <h3>{product.name}</h3>
-                      <p>{product.brand}</p>
-                      <strong>{currency(product.official_price)}</strong>
-                      <div className="model-meta">
-                        <span>{product.description || 'Official model entry in the catalog.'}</span>
+                      <h3 className="text-lg font-bold text-slate-800 mb-1">{product.name}</h3>
+                      <p className="text-xs text-slate-500 mb-3">{product.brand}</p>
+                      
+                      <p className="text-xs text-slate-400 mb-4 line-clamp-2 min-h-[32px]">{product.description || 'Official model entry in the catalog.'}</p>
+                      
+                      <div className="w-full pt-3 border-t border-slate-100 flex flex-col gap-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-400 uppercase font-black">Official Price</span>
+                          <strong className="text-teal font-extrabold text-base">{currency(product.official_price)}</strong>
+                        </div>
                         {role === 'customer' && (
-                          <small>{product.available_shops || 'Availability updates per shop'}</small>
+                          <div className="text-[11px] text-slate-500 bg-slate-50 rounded-lg p-2 mt-1 border border-slate-100/50">
+                            <span className="font-bold text-slate-700 block mb-0.5">Available At:</span>
+                            {product.available_shops || 'Currently unavailable'}
+                          </div>
                         )}
                       </div>
                     </motion.article>
@@ -1693,9 +1751,24 @@ function App() {
                   >
                     {data.stock.map((item) => (
                       <motion.div variants={itemVariants} className="row" key={item.id}>
-                        <span><b>{item.name}</b><small>{item.brand}</small></span>
-                        <span>{currency(item.official_price)}</span>
-                        <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs</strong>
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
+                            <Smartphone size={18} />
+                          </div>
+                          <span><b>{item.name}</b><small>{item.brand}</small></span>
+                        </div>
+                        <span>
+                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Category</span>
+                          <span className="status-badge stock-ok">{item.category || 'Mobile'}</span>
+                        </span>
+                        <span>
+                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Price</span>
+                          <strong>{currency(item.official_price)}</strong>
+                        </span>
+                        <div className="flex flex-col items-end">
+                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-1">Stock Level</span>
+                          <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs</strong>
+                        </div>
                       </motion.div>
                     ))}
                   </motion.div>
@@ -1970,13 +2043,34 @@ function App() {
                 <section className="panel">
                   <h2>Pending by shop</h2>
                   <div className="table">
-                    {data.reports.pendingByShop.map((row) => <div className="row" key={row.shop_name}><span>{row.shop_name}</span><strong>{currency(row.pending)}</strong></div>)}
+                    {data.reports.pendingByShop.length ? data.reports.pendingByShop.map((row) => (
+                      <div className="row" key={row.shop_name}>
+                        <span>{row.shop_name}</span>
+                        <strong>{currency(row.pending)}</strong>
+                      </div>
+                    )) : <Empty title="No pending payments by shop" />}
                   </div>
                 </section>
                 <section className="panel">
-                  <h2>Audit history</h2>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+                    <h2 className="!border-0 !pb-0 !m-0">Audit history</h2>
+                    {role === 'superadmin' && (
+                      <button 
+                        className="soft text-xs font-bold text-rose-600 hover:text-rose-800 border-rose-200 hover:border-rose-300 !px-3 !py-1.5 !min-h-[30px]" 
+                        type="button" 
+                        onClick={clearAuditLogs}
+                      >
+                        Clear Logs
+                      </button>
+                    )}
+                  </div>
                   <div className="table">
-                    {data.reports.auditRows.map((row) => <div className="row" key={row.id}><span><b>{row.action}</b><small>{row.actor_name} · {row.created_at}</small></span><span>{row.details}</span></div>)}
+                    {data.reports.auditRows.length ? data.reports.auditRows.map((row) => (
+                      <div className="row" key={row.id}>
+                        <span><b>{row.action}</b><small>{row.actor_name} · {row.created_at}</small></span>
+                        <span>{row.details}</span>
+                      </div>
+                    )) : <Empty title="No audit logs available" />}
                   </div>
                 </section>
               </section>

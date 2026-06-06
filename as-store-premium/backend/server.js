@@ -566,6 +566,15 @@ app.get('/api/reports', authenticateToken, requireShopStaff, async (req, res) =>
   res.json({ pendingByShop, availability, auditRows });
 });
 
+app.delete('/api/reports/audit', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    await runQuery('DELETE FROM audit_logs');
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to clear audit logs.' });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] Multi-shop API is live on http://localhost:${PORT}`);
 });
