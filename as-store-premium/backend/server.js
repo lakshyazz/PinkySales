@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { initDatabase, runQuery, getRecord, allRecords } from './database.js';
+import { initDatabase, runQuery, getRecord, allRecords, runTransaction } from './database.js';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -362,7 +362,6 @@ app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
 });
 
 app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
-  let inTransaction = false;
   try {
     const shopId = requireScopedShopId(req, req.body.shop_id);
     const { product_id, customer_id, quantity = 1, total_amount, paid_amount, due_date, notes } = req.body;
@@ -370,30 +369,30 @@ app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => 
     const saleQuantity = Number(quantity);
     if (!Number.isInteger(saleQuantity) || saleQuantity <= 0) return res.status(400).json({ error: 'Quantity must be at least 1.' });
 
-    await runQuery('BEGIN TRANSACTION;');
-    inTransaction = true;
-    const update = await runQuery(
-      'UPDATE stock SET quantity = quantity - ? WHERE shop_id = ? AND product_id = ? AND quantity >= ?',
-      [saleQuantity, shopId, product_id, saleQuantity]
-    );
-    if (update.changes === 0) {
-      await runQuery('ROLLBACK;');
-      return res.status(400).json({ error: 'Not enough stock in this shop.' });
-    }
-    const pending = Math.max(money(total_amount) - money(paid_amount), 0);
-    const result = await runQuery(
-      'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [shopId, product_id, customer_id, saleQuantity, total_amount, paid_amount || 0, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid']
-    );
-    if (money(paid_amount) > 0) {
-      await runQuery('INSERT INTO payments (sale_id, amount, payment_date, note) VALUES (?, ?, ?, ?)', [result.id, paid_amount, today(), 'Initial sale payment']);
-    }
-    await runQuery('COMMIT;');
-    inTransaction = false;
-    await audit(req, 'Created sale', 'sale', result.id, `Pending ${pending}`);
-    res.status(201).json({ id: result.id, pending_amount: pending });
+    const result = await runTransaction(async (tx) => {
+      const update = await tx.runQuery(
+        'UPDATE stock SET quantity = quantity - ? WHERE shop_id = ? AND product_id = ? AND quantity >= ?',
+        [saleQuantity, shopId, product_id, saleQuantity]
+      );
+      if (update.changes === 0) {
+        const error = new Error('Not enough stock in this shop.');
+        error.status = 400;
+        throw error;
+      }
+      const pending = Math.max(money(total_amount) - money(paid_amount), 0);
+      const insertResult = await tx.runQuery(
+        'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [shopId, product_id, customer_id, saleQuantity, total_amount, paid_amount || 0, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid']
+      );
+      if (money(paid_amount) > 0) {
+        await tx.runQuery('INSERT INTO payments (sale_id, amount, payment_date, note) VALUES (?, ?, ?, ?)', [insertResult.id, paid_amount, today(), 'Initial sale payment']);
+      }
+      return { id: insertResult.id, pending_amount: pending };
+    });
+
+    await audit(req, 'Created sale', 'sale', result.id, `Pending ${result.pending_amount}`);
+    res.status(201).json({ id: result.id, pending_amount: result.pending_amount });
   } catch (error) {
-    if (inTransaction) await runQuery('ROLLBACK;');
     res.status(error.status || 500).json({ error: error.message || 'Unable to create sale.' });
   }
 });
@@ -485,30 +484,33 @@ app.post('/api/payments', authenticateToken, requireShopStaff, async (req, res) 
 app.post('/api/stock-transfer', authenticateToken, requireSuperAdmin, async (req, res) => {
   const { from_shop_id, to_shop_id, product_id, quantity, note } = req.body;
   if (!from_shop_id || !to_shop_id || !product_id || !quantity) return res.status(400).json({ error: 'Transfer details are required.' });
-  await runQuery('BEGIN TRANSACTION;');
+  
   try {
-    const update = await runQuery(
-      'UPDATE stock SET quantity = quantity - ? WHERE shop_id = ? AND product_id = ? AND quantity >= ?',
-      [quantity, from_shop_id, product_id, quantity]
-    );
-    if (update.changes === 0) {
-      await runQuery('ROLLBACK;');
-      return res.status(400).json({ error: 'Source shop does not have enough stock.' });
-    }
-    await runQuery(
-      'INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, ?) ON CONFLICT(shop_id, product_id) DO UPDATE SET quantity = quantity + excluded.quantity, updated_at = CURRENT_TIMESTAMP',
-      [to_shop_id, product_id, quantity]
-    );
-    const result = await runQuery(
-      'INSERT INTO stock_transfers (from_shop_id, to_shop_id, product_id, quantity, transfer_date, note) VALUES (?, ?, ?, ?, ?, ?)',
-      [from_shop_id, to_shop_id, product_id, quantity, today(), note || '']
-    );
-    await runQuery('COMMIT;');
+    const result = await runTransaction(async (tx) => {
+      const update = await tx.runQuery(
+        'UPDATE stock SET quantity = quantity - ? WHERE shop_id = ? AND product_id = ? AND quantity >= ?',
+        [quantity, from_shop_id, product_id, quantity]
+      );
+      if (update.changes === 0) {
+        const error = new Error('Source shop does not have enough stock.');
+        error.status = 400;
+        throw error;
+      }
+      await tx.runQuery(
+        'INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, ?) ON CONFLICT(shop_id, product_id) DO UPDATE SET quantity = quantity + excluded.quantity, updated_at = CURRENT_TIMESTAMP',
+        [to_shop_id, product_id, quantity]
+      );
+      const insertResult = await tx.runQuery(
+        'INSERT INTO stock_transfers (from_shop_id, to_shop_id, product_id, quantity, transfer_date, note) VALUES (?, ?, ?, ?, ?, ?)',
+        [from_shop_id, to_shop_id, product_id, quantity, today(), note || '']
+      );
+      return { id: insertResult.id };
+    });
+
     await audit(req, 'Transferred stock', 'stock_transfer', result.id, `${quantity} units from ${from_shop_id} to ${to_shop_id}`);
     res.status(201).json({ id: result.id });
   } catch (error) {
-    await runQuery('ROLLBACK;');
-    throw error;
+    res.status(error.status || 500).json({ error: error.message || 'Unable to transfer stock.' });
   }
 });
 

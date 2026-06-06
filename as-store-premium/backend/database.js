@@ -44,6 +44,39 @@ export const allRecords = async (sql, params = []) => {
   return res.rows;
 };
 
+export const runTransaction = async (callback) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const tx = {
+      runQuery: async (sql, params = []) => {
+        const pgSql = convertSql(sql);
+        const res = await client.query(pgSql, params);
+        const id = res.rows && res.rows[0] ? res.rows[0].id : null;
+        return { id, changes: res.rowCount };
+      },
+      getRecord: async (sql, params = []) => {
+        const pgSql = convertSql(sql);
+        const res = await client.query(pgSql, params);
+        return res.rows[0] || null;
+      },
+      allRecords: async (sql, params = []) => {
+        const pgSql = convertSql(sql);
+        const res = await client.query(pgSql, params);
+        return res.rows;
+      }
+    };
+    const result = await callback(tx);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const seedUser = async ({ username, password, role, name, contact = '', shopId = null, permissions = '{}' }) => {
   const existing = await getRecord('SELECT id FROM users WHERE username = ?', [username]);
   if (existing) return existing.id;
