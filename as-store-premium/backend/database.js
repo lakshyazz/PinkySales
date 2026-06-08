@@ -3,13 +3,20 @@ import bcrypt from 'bcryptjs';
 
 const { Pool } = pg;
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:[YOUR-PASSWORD]@db.mkaiwdqcvpltydmqsfer.supabase.co:5432/postgres';
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error('DATABASE_URL is required.');
+}
 
 const pool = new Pool({
   connectionString,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: { rejectUnauthorized: false },
+  max: Number(process.env.PG_POOL_MAX || 5),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  query_timeout: 20_000,
+  keepAlive: true,
 });
 
 // Convert SQLite parameter placeholders (?) to PostgreSQL ($1, $2, ...)
@@ -90,12 +97,12 @@ const seedUser = async ({ username, password, role, name, contact = '', shopId =
 
 export const initDatabase = async () => {
   console.log('[Database] Connecting to PostgreSQL database on Supabase...');
-  // Verify database connection
-  await pool.query('SELECT NOW()');
-  
-  // Seed admin if missing
-  await seedUser({ username: 'superadmin', password: 'superadmin123', role: 'superadmin', name: 'Super Admin', contact: '9999999999' });
-  await runQuery("UPDATE users SET name = 'Super Admin' WHERE username = 'superadmin' AND name = 'Father - Super Admin';");
+  await pool.query('SELECT 1');
+
+  if (process.env.SEED_DEFAULT_ADMIN === 'true') {
+    await seedUser({ username: 'superadmin', password: 'superadmin123', role: 'superadmin', name: 'Super Admin', contact: '9999999999' });
+    await runQuery("UPDATE users SET name = 'Super Admin' WHERE username = 'superadmin' AND name = 'Father - Super Admin';");
+  }
   
   console.log('[Database] PostgreSQL database connection ready.');
 };

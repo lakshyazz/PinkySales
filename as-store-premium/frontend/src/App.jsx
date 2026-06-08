@@ -29,20 +29,64 @@ import {
   X,
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+const configuredApiBase = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = (
+  import.meta.env.PROD && (!configuredApiBase || configuredApiBase.includes('pinkysales.onrender.com'))
+    ? '/api'
+    : configuredApiBase || 'http://localhost:5000/api'
+).replace(/\/$/, '');
+
+class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
 
 const api = async (path, options = {}, token = '') => {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || 'Something went wrong.');
+  if (!response.ok) throw new ApiError(data.error || 'Something went wrong.', response.status);
   return data;
+};
+
+const isSessionError = (error) => (
+  error?.status === 401
+  || (error?.status === 403 && /session expired|invalid token|login again/i.test(error.message))
+);
+
+const normalizeSession = (session) => {
+  if (!session) return session;
+  const role = session.role === 'admin' ? 'shopkeeper' : session.role === 'user' ? 'customer' : session.role;
+  return { ...session, role };
+};
+
+const readStoredSession = () => {
+  try {
+    const raw = localStorage.getItem('session');
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const segment = parsed.token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const paddedSegment = segment.padEnd(segment.length + ((4 - (segment.length % 4)) % 4), '=');
+    const payload = JSON.parse(atob(paddedSegment));
+    if (!payload.exp || payload.exp * 1000 <= Date.now()) {
+      localStorage.removeItem('session');
+      return null;
+    }
+    if (parsed.name === 'Father - Super Admin') parsed.name = 'Super Admin';
+    return normalizeSession(parsed);
+  } catch {
+    localStorage.removeItem('session');
+    return null;
+  }
 };
 
 const currency = (value) => `\u20b9${Number(value || 0).toLocaleString('en-IN')}`;
@@ -75,6 +119,8 @@ const navByRole = {
     ['models', 'Models', Smartphone],
   ],
 };
+navByRole.admin = navByRole.shopkeeper;
+navByRole.user = navByRole.customer;
 
 const handleFormKeyDown = (e) => {
   if (e.key === 'Enter') {
@@ -295,14 +341,18 @@ function Login({ onLogin }) {
   const [form, setForm] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const submit = async (event) => {
     event.preventDefault();
     setError('');
+    setSubmitting(true);
     try {
       onLogin(await api('/auth/login', { method: 'POST', body: JSON.stringify(form) }));
     } catch (err) {
       setError(err.message);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -362,7 +412,9 @@ function Login({ onLogin }) {
               </motion.div>
             )}
           </AnimatePresence>
-          <button className="primary" type="submit"><ShieldCheck size={18} /> Login</button>
+          <button className="primary" type="submit" disabled={submitting}>
+            <ShieldCheck size={18} /> {submitting ? 'Signing in...' : 'Login'}
+          </button>
         </form>
       </motion.section>
     </motion.main>
@@ -384,15 +436,8 @@ function PageWrapper({ children, activeKey }) {
 }
 
 function App() {
-  const [session, setSession] = useState(() => {
-    const raw = localStorage.getItem('session');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && parsed.name === 'Father - Super Admin') {
-      parsed.name = 'Super Admin';
-    }
-    return parsed;
-  });
+  const [session, setSession] = useState(readStoredSession);
+  const [authReady, setAuthReady] = useState(() => !session);
   const [active, setActive] = useState(session?.role === 'customer' ? 'catalog' : 'dashboard');
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState('');
@@ -425,6 +470,35 @@ function App() {
     document.documentElement.classList.remove('dark');
     localStorage.removeItem('theme');
   }, []);
+
+  useEffect(() => {
+    if (!session || authReady) return undefined;
+
+    let cancelled = false;
+    api('/me', {}, session.token)
+      .then((user) => {
+        if (cancelled) return;
+        const verifiedSession = normalizeSession({ ...session, ...user });
+        localStorage.setItem('session', JSON.stringify(verifiedSession));
+        setSession(verifiedSession);
+        setAuthReady(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (error?.status === 401 || error?.status === 403) {
+          localStorage.removeItem('session');
+          setSession(null);
+          setActive('dashboard');
+        } else {
+          setLoadError(error?.message || 'Unable to verify the saved session.');
+        }
+        setAuthReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.token, authReady]);
 
   // Super Admin Shop Details Drawer States
   const [detailedShopId, setDetailedShopId] = useState(null);
@@ -459,6 +533,10 @@ function App() {
     return true;
   };
   const handleLoadError = (error, fallback = 'Unable to load data right now') => {
+    if (isSessionError(error)) {
+      logout();
+      return;
+    }
     const message = error?.message || fallback;
     setLoadError(message);
     showToast(message);
@@ -488,8 +566,6 @@ function App() {
         role === 'customer' ? api('/catalog') : authedFetch('/products'),
       ]);
       setData((prev) => ({ ...prev, shops, products, catalog: role === 'customer' ? products : prev.catalog }));
-      if (!selectedShop && role === 'superadmin' && shops[0]) setSelectedShop(String(shops[0].id));
-      await loadTab(active, selectedShop || shops[0]?.id || '');
     } catch (error) {
       handleLoadError(error, 'Unable to load the workspace. Check whether the local servers are running.');
     } finally {
@@ -638,22 +714,26 @@ function App() {
   };
 
   useEffect(() => {
-    if (session) loadCore();
-  }, [session]);
+    if (session && authReady) loadCore();
+  }, [session?.token, authReady]);
 
   useEffect(() => {
-    if (session) loadTab(active, shopId);
-  }, [active, selectedShop]);
+    if (session && authReady) loadTab(active, shopId);
+  }, [active, selectedShop, session?.token, authReady]);
 
   const login = (nextSession) => {
-    localStorage.setItem('session', JSON.stringify(nextSession));
-    setSession(nextSession);
-    setActive(nextSession.role === 'customer' ? 'catalog' : 'dashboard');
+    const normalizedSession = normalizeSession(nextSession);
+    localStorage.setItem('session', JSON.stringify(normalizedSession));
+    setSession(normalizedSession);
+    setAuthReady(true);
+    setActive(normalizedSession.role === 'customer' ? 'catalog' : 'dashboard');
   };
 
   const logout = () => {
     localStorage.removeItem('session');
     setSession(null);
+    setAuthReady(true);
+    setSelectedShop('');
     setActive('dashboard');
   };
 
@@ -1316,6 +1396,7 @@ function App() {
     return matchesSearch && matchesShop;
   });
 
+  if (!authReady) return <SkeletonPage type="dashboard" />;
   if (!session) return <Login onLogin={login} />;
 
   return (

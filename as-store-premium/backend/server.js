@@ -8,6 +8,13 @@ import { initDatabase, runQuery, getRecord, allRecords, runTransaction } from '.
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'as-store-multishop-local-secret';
+const VALID_ROLES = new Set(['superadmin', 'shopkeeper', 'admin', 'customer', 'user']);
+const isShopStaffRole = (role) => role === 'shopkeeper' || role === 'admin';
+const isCustomerRole = (role) => role === 'customer' || role === 'user';
+
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  throw new Error('JWT_SECRET is required in production.');
+}
 
 app.use(cors());
 app.use(express.json());
@@ -24,6 +31,13 @@ const lastDays = (count = 7) => Array.from({ length: count }, (_, index) => {
   return date.toISOString().slice(0, 10);
 });
 const money = (value) => Number(value || 0);
+const createToken = (user) => jwt.sign({
+  id: user.id,
+  username: user.username,
+  role: user.role,
+  name: user.name,
+  shop_id: user.shop_id,
+}, JWT_SECRET, { expiresIn: '10h' });
 
 const audit = async (req, action, entityType, entityId, details = '') => {
   await runQuery(
@@ -50,12 +64,12 @@ const requireSuperAdmin = (req, res, next) => {
 };
 
 const requireShopStaff = (req, res, next) => {
-  if (req.user.role === 'superadmin' || req.user.role === 'shopkeeper') return next();
+  if (req.user.role === 'superadmin' || isShopStaffRole(req.user.role)) return next();
   return res.status(403).json({ error: 'Shop staff access required.' });
 };
 
 const scopeShopId = (req) => {
-  if (req.user.role === 'shopkeeper') return Number(req.user.shop_id);
+  if (isShopStaffRole(req.user.role)) return Number(req.user.shop_id);
   return req.query.shopId || req.body.shop_id || req.params.shopId || null;
 };
 
@@ -75,11 +89,12 @@ const requireScopedShopId = (req, requestedShopId) => {
 };
 
 app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
+  const username = String(req.body.username || '').trim();
+  const { password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Enter username and password.' });
 
   const user = await getRecord(`
-    SELECT u.*, s.name AS shop_name, s.area AS shop_area
+    SELECT u.id, u.username, u.password, u.role, u.name, u.shop_id, s.name AS shop_name, s.area AS shop_area
     FROM users u
     LEFT JOIN shops s ON s.id = u.shop_id
     WHERE u.username = ?
@@ -88,17 +103,15 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.password))) {
     return res.status(401).json({ error: 'Wrong username or password.' });
   }
+  if (!VALID_ROLES.has(user.role)) {
+    return res.status(403).json({ error: 'This account has an invalid role. Contact the Super Admin.' });
+  }
+  if (isShopStaffRole(user.role) && !user.shop_id) {
+    return res.status(403).json({ error: 'This account is not assigned to a shop. Contact the Super Admin.' });
+  }
 
-  const payload = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    name: user.name,
-    shop_id: user.shop_id,
-  };
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '10h' });
   res.json({
-    token,
+    token: createToken(user),
     id: user.id,
     username: user.username,
     role: user.role,
@@ -116,63 +129,72 @@ app.get('/api/me', authenticateToken, async (req, res) => {
     LEFT JOIN shops s ON s.id = u.shop_id
     WHERE u.id = ?
   `, [req.user.id]);
-  res.json(user);
+  if (!user || !VALID_ROLES.has(user.role)) {
+    return res.status(401).json({ error: 'Session account no longer exists. Please login again.' });
+  }
+  if (isShopStaffRole(user.role) && !user.shop_id) {
+    return res.status(403).json({ error: 'This account is not assigned to a shop. Contact the Super Admin.' });
+  }
+  res.json({ ...user, token: createToken(user) });
 });
 
-app.get('/api/dashboard', authenticateToken, async (req, res) => {
+app.get('/api/dashboard', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = scopeShopId(req);
-
-  const totals = await getRecord(`
-    SELECT
-      (SELECT COUNT(*) FROM shops WHERE status = 'active') AS total_shops,
-      (SELECT COALESCE(SUM(quantity), 0) FROM stock ${shopId ? 'WHERE shop_id = ?' : ''}) AS total_stock,
-      (SELECT COALESCE(SUM(total_amount), 0) FROM sales ${shopId ? 'WHERE shop_id = ? AND' : 'WHERE'} sale_date = ?) AS today_sales,
-      (SELECT COALESCE(SUM(pending_amount), 0) FROM sales ${shopId ? 'WHERE shop_id = ? AND' : 'WHERE'} pending_amount > 0) AS pending_payments
-  `, shopId ? [shopId, shopId, today(), shopId] : [today()]);
-
-  const lowStock = await allRecords(`
-    SELECT st.id, sh.name AS shop_name, p.name AS product_name, p.brand, st.quantity, sh.low_stock_threshold
-    FROM stock st
-    JOIN shops sh ON sh.id = st.shop_id
-    JOIN products p ON p.id = st.product_id
-    WHERE st.quantity <= sh.low_stock_threshold ${shopId ? 'AND st.shop_id = ?' : ''}
-    ORDER BY st.quantity ASC, p.name ASC
-    LIMIT 12
-  `, shopId ? [shopId] : []);
-
-  const shopWise = await allRecords(`
-    SELECT sh.id, sh.name, sh.area,
-      COALESCE(SUM(st.quantity), 0) AS stock,
-      COALESCE(SUM(sa.pending_amount), 0) AS pending,
-      COALESCE(SUM(CASE WHEN sa.sale_date = ? THEN sa.total_amount ELSE 0 END), 0) AS sales_today
-    FROM shops sh
-    LEFT JOIN stock st ON st.shop_id = sh.id
-    LEFT JOIN sales sa ON sa.shop_id = sh.id
-    ${shopId ? 'WHERE sh.id = ?' : ''}
-    GROUP BY sh.id
-    ORDER BY sales_today DESC, pending DESC
-  `, shopId ? [today(), shopId] : [today()]);
-
-  const topProducts = await allRecords(`
-    SELECT p.name, p.brand, COALESCE(SUM(sa.quantity), 0) AS sold
-    FROM products p
-    LEFT JOIN sales sa ON sa.product_id = p.id ${shopId ? 'AND sa.shop_id = ?' : ''}
-    GROUP BY p.id
-    ORDER BY sold DESC, p.name ASC
-    LIMIT 6
-  `, shopId ? [shopId] : []);
-
   const trendDays = lastDays();
-  const salesTrendRows = await Promise.all(trendDays.map((day) => getRecord(`
-    SELECT COALESCE(SUM(total_amount), 0) AS value
-    FROM sales
-    WHERE sale_date = ? ${shopId ? 'AND shop_id = ?' : ''}
-  `, shopId ? [day, shopId] : [day])));
-  const pendingTrendRows = await Promise.all(trendDays.map((day) => getRecord(`
-    SELECT COALESCE(SUM(pending_amount), 0) AS value
-    FROM sales
-    WHERE pending_amount > 0 AND due_date = ? ${shopId ? 'AND shop_id = ?' : ''}
-  `, shopId ? [day, shopId] : [day])));
+  const trendPlaceholders = trendDays.map(() => '?').join(', ');
+
+  const [totals, lowStock, shopWise, topProducts, salesTrendRows, pendingTrendRows] = await Promise.all([
+    getRecord(`
+      SELECT
+        (SELECT COUNT(*) FROM shops WHERE status = 'active' ${shopId ? 'AND id = ?' : ''}) AS total_shops,
+        (SELECT COALESCE(SUM(quantity), 0) FROM stock ${shopId ? 'WHERE shop_id = ?' : ''}) AS total_stock,
+        (SELECT COALESCE(SUM(total_amount), 0) FROM sales ${shopId ? 'WHERE shop_id = ? AND' : 'WHERE'} sale_date = ?) AS today_sales,
+        (SELECT COALESCE(SUM(pending_amount), 0) FROM sales ${shopId ? 'WHERE shop_id = ? AND' : 'WHERE'} pending_amount > 0) AS pending_payments
+    `, shopId ? [shopId, shopId, shopId, today(), shopId] : [today()]),
+    allRecords(`
+      SELECT st.id, sh.name AS shop_name, p.name AS product_name, p.brand, st.quantity, sh.low_stock_threshold
+      FROM stock st
+      JOIN shops sh ON sh.id = st.shop_id
+      JOIN products p ON p.id = st.product_id
+      WHERE st.quantity <= sh.low_stock_threshold ${shopId ? 'AND st.shop_id = ?' : ''}
+      ORDER BY st.quantity ASC, p.name ASC
+      LIMIT 12
+    `, shopId ? [shopId] : []),
+    allRecords(`
+      SELECT sh.id, sh.name, sh.area,
+        COALESCE((SELECT SUM(st.quantity) FROM stock st WHERE st.shop_id = sh.id), 0) AS stock,
+        COALESCE((SELECT SUM(sa.pending_amount) FROM sales sa WHERE sa.shop_id = sh.id), 0) AS pending,
+        COALESCE((SELECT SUM(sa.total_amount) FROM sales sa WHERE sa.shop_id = sh.id AND sa.sale_date = ?), 0) AS sales_today
+      FROM shops sh
+      ${shopId ? 'WHERE sh.id = ?' : ''}
+      ORDER BY sales_today DESC, pending DESC
+    `, shopId ? [today(), shopId] : [today()]),
+    allRecords(`
+      SELECT p.name, p.brand, COALESCE(SUM(sa.quantity), 0) AS sold
+      FROM products p
+      LEFT JOIN sales sa ON sa.product_id = p.id ${shopId ? 'AND sa.shop_id = ?' : ''}
+      GROUP BY p.id
+      ORDER BY sold DESC, p.name ASC
+      LIMIT 6
+    `, shopId ? [shopId] : []),
+    allRecords(`
+      SELECT sale_date AS day, COALESCE(SUM(total_amount), 0) AS value
+      FROM sales
+      WHERE sale_date IN (${trendPlaceholders}) ${shopId ? 'AND shop_id = ?' : ''}
+      GROUP BY sale_date
+    `, shopId ? [...trendDays, shopId] : trendDays),
+    allRecords(`
+      SELECT due_date AS day, COALESCE(SUM(pending_amount), 0) AS value
+      FROM sales
+      WHERE pending_amount > 0 AND due_date IN (${trendPlaceholders}) ${shopId ? 'AND shop_id = ?' : ''}
+      GROUP BY due_date
+    `, shopId ? [...trendDays, shopId] : trendDays),
+  ]);
+
+  const trendValues = (rows) => {
+    const valuesByDay = new Map(rows.map((row) => [String(row.day).slice(0, 10), money(row.value)]));
+    return trendDays.map((day) => valuesByDay.get(day) || 0);
+  };
 
   res.json({
     totals,
@@ -180,23 +202,32 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
     shopWise,
     topProducts,
     trends: {
-      sales: salesTrendRows.map((row) => money(row.value)),
-      pending: pendingTrendRows.map((row) => money(row.value)),
+      sales: trendValues(salesTrendRows),
+      pending: trendValues(pendingTrendRows),
     },
   });
 });
 
 app.get('/api/shops', authenticateToken, async (req, res) => {
+  if (isCustomerRole(req.user.role)) {
+    const rows = await allRecords(`
+      SELECT id, name, area
+      FROM shops
+      WHERE status = 'active'
+      ORDER BY id ASC
+    `);
+    return res.json(rows);
+  }
+
+  const shopId = isShopStaffRole(req.user.role) ? Number(req.user.shop_id) : null;
   const rows = await allRecords(`
     SELECT sh.*,
-      COALESCE(SUM(st.quantity), 0) AS stock,
-      COALESCE(SUM(sa.pending_amount), 0) AS pending
+      COALESCE((SELECT SUM(st.quantity) FROM stock st WHERE st.shop_id = sh.id), 0) AS stock,
+      COALESCE((SELECT SUM(sa.pending_amount) FROM sales sa WHERE sa.shop_id = sh.id), 0) AS pending
     FROM shops sh
-    LEFT JOIN stock st ON st.shop_id = sh.id
-    LEFT JOIN sales sa ON sa.shop_id = sh.id
-    GROUP BY sh.id
+    ${shopId ? 'WHERE sh.id = ?' : ''}
     ORDER BY sh.id ASC
-  `);
+  `, shopId ? [shopId] : []);
   res.json(rows);
 });
 
@@ -234,7 +265,7 @@ app.get('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, re
     SELECT u.id, u.username, u.name, u.contact, u.shop_id, s.name AS shop_name
     FROM users u
     LEFT JOIN shops s ON s.id = u.shop_id
-    WHERE u.role = 'shopkeeper'
+    WHERE u.role IN ('shopkeeper', 'admin')
     ORDER BY s.name, u.name
   `);
   res.json(rows);
@@ -252,7 +283,7 @@ app.post('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, r
   res.status(201).json({ id: result.id, username, name, contact, shop_id });
 });
 
-app.get('/api/products', authenticateToken, async (req, res) => {
+app.get('/api/products', authenticateToken, requireShopStaff, async (req, res) => {
   const rows = await allRecords('SELECT * FROM products WHERE is_active = 1 AND name IS NOT NULL ORDER BY brand, name');
   res.json(rows);
 });
@@ -399,7 +430,7 @@ app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => 
 
 app.get('/api/stock-requests', authenticateToken, requireShopStaff, async (req, res) => {
   try {
-    const shopId = req.user.role === 'shopkeeper' ? req.user.shop_id : scopeShopId(req);
+    const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);
     const rows = await allRecords(`
       SELECT sr.*, sh.name AS shop_name, sh.area AS shop_area, p.name AS product_name, p.brand, p.official_price,
         u.name AS created_by_name,
@@ -451,7 +482,7 @@ app.put('/api/stock-requests/:id', authenticateToken, requireSuperAdmin, async (
 });
 
 app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req, res) => {
-  const shopId = req.user.role === 'shopkeeper' ? req.user.shop_id : scopeShopId(req);
+  const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);
   const rows = await allRecords(`
     SELECT sa.*, p.name AS product_name, c.name AS customer_name, c.mobile, c.address, sh.name AS shop_name
     FROM sales sa
@@ -469,7 +500,7 @@ app.post('/api/payments', authenticateToken, requireShopStaff, async (req, res) 
   if (!sale_id || !amount) return res.status(400).json({ error: 'Sale and amount are required.' });
   const sale = await getRecord('SELECT * FROM sales WHERE id = ?', [sale_id]);
   if (!sale) return res.status(404).json({ error: 'Sale not found.' });
-  if (req.user.role === 'shopkeeper' && Number(req.user.shop_id) !== Number(sale.shop_id)) {
+  if (isShopStaffRole(req.user.role) && Number(req.user.shop_id) !== Number(sale.shop_id)) {
     return res.status(403).json({ error: 'This sale belongs to another branch.' });
   }
 
@@ -543,7 +574,7 @@ app.get('/api/catalog', async (req, res) => {
 });
 
 app.get('/api/reports', authenticateToken, requireShopStaff, async (req, res) => {
-  const shopId = req.user.role === 'shopkeeper' ? req.user.shop_id : scopeShopId(req);
+  const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);
   const pendingByShop = await allRecords(`
     SELECT sh.name AS shop_name, COALESCE(SUM(sa.pending_amount), 0) AS pending
     FROM shops sh
@@ -560,7 +591,7 @@ app.get('/api/reports', authenticateToken, requireShopStaff, async (req, res) =>
     WHERE st.quantity > 0 ${shopId ? 'AND st.shop_id = ?' : ''}
     ORDER BY p.name, sh.name
   `, shopId ? [shopId] : []);
-  const auditRows = req.user.role === 'shopkeeper'
+  const auditRows = isShopStaffRole(req.user.role)
     ? await allRecords("SELECT * FROM audit_logs WHERE actor_id = ? AND action = 'Created sale' ORDER BY id DESC LIMIT 25", [req.user.id])
     : await allRecords('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 25');
   res.json({ pendingByShop, availability, auditRows });
