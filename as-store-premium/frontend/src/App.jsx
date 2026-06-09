@@ -1377,6 +1377,148 @@ function App() {
     printWindow.document.close();
   };
 
+  const printTaxInvoicePDF = (sale) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast('Allow pop-ups to open the invoice');
+      return;
+    }
+
+    const safe = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+    }[character]));
+    const formatDate = (value) => {
+      const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+      return match ? `${match[3]}/${match[2]}/${match[1]}` : safe(value || new Date().toLocaleDateString('en-GB'));
+    };
+    const formatAmount = (value) => Number(value || 0).toLocaleString('en-IN', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const toWords = (value) => {
+      const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+      const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+      const words = (number) => {
+        if (number < 20) return ones[number];
+        if (number < 100) return `${tens[Math.floor(number / 10)]}${number % 10 ? ` ${ones[number % 10]}` : ''}`;
+        if (number < 1000) return `${ones[Math.floor(number / 100)]} Hundred${number % 100 ? ` ${words(number % 100)}` : ''}`;
+        if (number < 100000) return `${words(Math.floor(number / 1000))} Thousand${number % 1000 ? ` ${words(number % 1000)}` : ''}`;
+        if (number < 10000000) return `${words(Math.floor(number / 100000))} Lakh${number % 100000 ? ` ${words(number % 100000)}` : ''}`;
+        return `${words(Math.floor(number / 10000000))} Crore${number % 10000000 ? ` ${words(number % 10000000)}` : ''}`;
+      };
+      const wholeAmount = Math.max(0, Math.floor(Number(value || 0)));
+      return wholeAmount ? words(wholeAmount) : 'Zero';
+    };
+
+    const invoiceNo = `D-${String(sale.id).padStart(5, '0')}`;
+    const shopName = safe(sale.shop_name || 'AS Store');
+    const shopLines = [sale.shop_address, sale.shop_area, sale.shop_phone ? `Phone: ${sale.shop_phone}` : '', 'India']
+      .filter(Boolean)
+      .map((line) => `<div>${safe(line)}</div>`)
+      .join('');
+    const customerDetails = [sale.mobile, sale.address].filter(Boolean).map(safe).join(' &middot; ');
+    const productDetails = [sale.brand, sale.description].filter(Boolean).map(safe).join(' - ');
+    const quantity = Number(sale.quantity || 1);
+    const total = Number(sale.total_amount || 0);
+    const unitPrice = quantity ? total / quantity : total;
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html lang="en">
+        <head>
+          <title>Invoice - ${invoiceNo}</title>
+          <style>
+            @page { size: A4; margin: 12mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; padding: 12mm; background: #fff; color: #111; font: 12px Arial, Helvetica, sans-serif; }
+            .invoice { max-width: 190mm; min-height: 260mm; margin: auto; border: 1px solid #777; }
+            .header { display: grid; grid-template-columns: 1fr 1fr; align-items: start; padding: 7px 9px 5px; border-bottom: 1px solid #999; }
+            h1 { margin: 0; font-size: 19px; line-height: 1.1; font-weight: 800; text-transform: uppercase; }
+            .shop-details { margin-top: 4px; line-height: 1.35; }
+            h2 { margin: 0; text-align: right; font-size: 33px; line-height: 1; font-weight: 400; }
+            .meta { display: grid; grid-template-columns: 1fr 1fr; min-height: 78px; border-bottom: 1px solid #999; }
+            .meta > div { padding: 4px 8px; }
+            .meta > div:first-child { border-right: 1px solid #999; }
+            .meta-line { display: grid; grid-template-columns: 115px 8px 1fr; gap: 2px; line-height: 1.5; }
+            .bill-title { padding: 3px 7px; font-weight: 700; background: #f2f2f2; border-bottom: 1px solid #999; }
+            .bill-to { min-height: 36px; padding: 6px 7px; font-weight: 700; border-bottom: 1px solid #999; }
+            .bill-to small, .item small { display: block; margin-top: 2px; font-weight: 400; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 5px 7px; border-right: 1px solid #999; border-bottom: 1px solid #999; vertical-align: top; }
+            th:last-child, td:last-child { border-right: 0; }
+            th { background: #f2f2f2; text-align: left; font-weight: 700; }
+            .number { width: 38px; text-align: center; }
+            .qty { width: 82px; text-align: right; }
+            .money { width: 100px; text-align: right; }
+            .item { min-height: 42px; }
+            .summary { display: grid; grid-template-columns: 56% 44%; }
+            .notes { min-height: 175px; padding: 7px; border-right: 1px solid #999; border-bottom: 1px solid #999; }
+            .words { margin: 13px 0 18px; }
+            .words strong { display: block; margin-top: 2px; font-style: italic; }
+            .notes-block { margin-top: 14px; }
+            .totals { border-bottom: 1px solid #999; }
+            .total-line { display: grid; grid-template-columns: 1fr 105px; gap: 12px; padding: 3px 7px; text-align: right; }
+            .grand { font-weight: 800; font-size: 13px; }
+            .signature { height: 110px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; border-top: 1px solid #999; }
+            @media print { body { padding: 0; } .invoice { max-width: 100%; } }
+          </style>
+        </head>
+        <body>
+          <div class="invoice">
+            <div class="header">
+              <div><h1>${shopName}</h1><div class="shop-details">${shopLines}</div></div>
+              <h2>TAX INVOICE</h2>
+            </div>
+            <div class="meta">
+              <div>
+                <div class="meta-line"><span>Invoice No</span><b>:</b><strong>${invoiceNo}</strong></div>
+                <div class="meta-line"><span>Invoice Date</span><b>:</b><strong>${formatDate(sale.sale_date)}</strong></div>
+                <div class="meta-line"><span>Terms</span><b>:</b><strong>Due on Receipt</strong></div>
+                <div class="meta-line"><span>Due Date</span><b>:</b><strong>${formatDate(sale.due_date || sale.sale_date)}</strong></div>
+              </div>
+              <div></div>
+            </div>
+            <div class="bill-title">Bill To</div>
+            <div class="bill-to">${safe(sale.customer_name || 'Walk-in Customer')}${customerDetails ? `<small>${customerDetails}</small>` : ''}</div>
+            <table>
+              <thead><tr><th class="number">#</th><th>Item &amp; Description</th><th class="qty">Qty</th><th class="money">Rate</th><th class="money">Amount</th></tr></thead>
+              <tbody><tr>
+                <td class="number">1</td>
+                <td class="item">${safe(sale.product_name || 'Product')}${productDetails ? `<small>${productDetails}</small>` : ''}</td>
+                <td class="qty">${quantity}<br/>PCS</td>
+                <td class="money">${formatAmount(unitPrice)}</td>
+                <td class="money">${formatAmount(total)}</td>
+              </tr></tbody>
+            </table>
+            <div class="summary">
+              <div class="notes">
+                <div>Items in Total ${quantity}</div>
+                <div class="words">Total In Words<strong>Indian Rupee ${toWords(total)} Only</strong></div>
+                <div class="notes-block">Notes<br/>${safe(sale.notes || 'Thanks for your business.')}</div>
+                <div class="notes-block">Terms &amp; Conditions<br/>Goods once sold will not be returned or exchanged.</div>
+              </div>
+              <div class="totals">
+                <div class="total-line"><span>Sub Total</span><span>${formatAmount(total)}</span></div>
+                <div class="total-line"><span>Shipping charge</span><span>0.00</span></div>
+                <div class="total-line grand"><span>Total</span><span>Rs.${formatAmount(total)}</span></div>
+                <div class="total-line grand"><span>Amount Paid</span><span>Rs.${formatAmount(sale.paid_amount)}</span></div>
+                <div class="total-line grand"><span>Balance Due</span><span>Rs.${formatAmount(sale.pending_amount)}</span></div>
+                <div class="signature">Authorized Signature</div>
+              </div>
+            </div>
+          </div>
+          <script>
+            window.onload = function() {
+              window.print();
+              setTimeout(function() { window.close(); }, 500);
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
   const modelItems = (role === 'customer' ? data.catalog : data.products).filter((item) => {
     const query = modelSearch.trim().toLowerCase();
     if (!query) return true;
@@ -2008,7 +2150,10 @@ function App() {
                         <span><b>{sale.customer_name}</b><small>{sale.product_name}</small></span>
                         <span>{currency(sale.total_amount)}</span>
                         <span>{currency(sale.paid_amount)}</span>
-                        <strong className={`status-badge ${sale.pending_amount > 0 ? 'pending' : 'paid'}`}>{currency(sale.pending_amount)}</strong>
+                        <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                          <strong className={`status-badge ${sale.pending_amount > 0 ? 'pending' : 'paid'}`}>{currency(sale.pending_amount)}</strong>
+                          <button className="soft" onClick={() => printTaxInvoicePDF(sale)}><ReceiptText size={16} /> Invoice</button>
+                        </span>
                       </motion.div>
                     ))}
                   </motion.div>
@@ -2101,7 +2246,7 @@ function App() {
                       <div className="actions">
                         <button className="soft" type="button" onClick={() => setExpandedPaymentId(expandedPaymentId === String(item.id) ? '' : String(item.id))}><ReceiptText size={17} /> Ledger</button>
                         <a className="soft" href={whatsappLink(item)} target="_blank" rel="noreferrer"><Send size={17} /> WhatsApp</a>
-                        <button className="soft" onClick={() => printInvoicePDF(item)}><ReceiptText size={17} /> Invoice</button>
+                        <button className="soft" onClick={() => printTaxInvoicePDF(item)}><ReceiptText size={17} /> Invoice</button>
                         <button className="primary" onClick={() => recordPayment(item)}><CreditCard size={17} /> Paid</button>
                       </div>
                       <div className="ledger-panel" aria-hidden={expandedPaymentId !== String(item.id)}>
@@ -2502,7 +2647,10 @@ function App() {
                               <div className="row text-sm hover:bg-slate-50/40" key={s.id} style={{ gridTemplateColumns: '1.5fr 1.2fr 1.2fr' }}>
                                 <span><b>{s.customer_name || 'Walk-in'}</b><small>{s.product_name} x {s.quantity}</small></span>
                                 <span>{currency(s.total_amount)} <small>Paid: {currency(s.paid_amount)}</small></span>
-                                <strong className={`status-badge ${s.pending_amount > 0 ? 'pending' : 'paid'}`}>{currency(s.pending_amount)}</strong>
+                                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+                                  <strong className={`status-badge ${s.pending_amount > 0 ? 'pending' : 'paid'}`}>{currency(s.pending_amount)}</strong>
+                                  <button className="soft" onClick={() => printTaxInvoicePDF(s)}><ReceiptText size={16} /> Invoice</button>
+                                </span>
                               </div>
                             ))}
                             {!detailedShopData.sales.length && <Empty title="No sales found" />}

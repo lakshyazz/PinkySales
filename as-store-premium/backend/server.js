@@ -381,7 +381,9 @@ app.post('/api/customers', authenticateToken, requireShopStaff, async (req, res)
 app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = assertShopAccess(req, scopeShopId(req));
   const rows = await allRecords(`
-    SELECT sa.*, p.name AS product_name, p.brand, c.name AS customer_name, c.mobile, sh.name AS shop_name
+    SELECT sa.*, p.name AS product_name, p.brand, p.category, p.description,
+      c.name AS customer_name, c.mobile, c.address,
+      sh.name AS shop_name, sh.area AS shop_area, sh.address AS shop_address, sh.phone AS shop_phone
     FROM sales sa
     JOIN products p ON p.id = sa.product_id
     JOIN shops sh ON sh.id = sa.shop_id
@@ -484,7 +486,9 @@ app.put('/api/stock-requests/:id', authenticateToken, requireSuperAdmin, async (
 app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);
   const rows = await allRecords(`
-    SELECT sa.*, p.name AS product_name, c.name AS customer_name, c.mobile, c.address, sh.name AS shop_name
+    SELECT sa.*, p.name AS product_name, p.brand, p.category, p.description,
+      c.name AS customer_name, c.mobile, c.address,
+      sh.name AS shop_name, sh.area AS shop_area, sh.address AS shop_address, sh.phone AS shop_phone
     FROM sales sa
     JOIN products p ON p.id = sa.product_id
     JOIN customers c ON c.id = sa.customer_id
