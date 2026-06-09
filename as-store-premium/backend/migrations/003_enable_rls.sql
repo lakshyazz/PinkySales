@@ -1,0 +1,12 @@
+-- Block direct Supabase anon/authenticated access. The Express backend connects
+-- as the table owner and continues to enforce application role/shop scoping.
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock ENABLE ROW LEVEL SECURITY;
+ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sales ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE stock_transfers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
