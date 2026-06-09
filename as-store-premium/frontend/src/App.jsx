@@ -1769,15 +1769,22 @@ function App() {
     return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch && matchesShopkeeper;
   });
 
-  const visibleStock = data.stock.filter((item) => {
-    const matchesBrand = !stockFilters.brand || item.brand === stockFilters.brand;
-    const matchesCategory = !stockFilters.category || item.category === stockFilters.category;
-    const matchesColour = !stockFilters.colour || (item.colours || []).includes(stockFilters.colour);
-    const matchesStatus = !stockFilters.status
-      || (stockFilters.status === 'in_stock' ? Number(item.quantity) > 0 : Number(item.quantity) === 0);
-    const matchesBatch = (!stockFilters.batch && !stockFilters.shopkeeperId) || visibleBatches.some((batch) => String(batch.product_id) === String(item.product_id));
-    return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch;
-  });
+  const hasBatchScopedStockFilter = Boolean(stockFilters.colour || stockFilters.batch || stockFilters.shopkeeperId);
+  const visibleStock = data.stock
+    .filter((item) => (!stockFilters.brand || item.brand === stockFilters.brand)
+      && (!stockFilters.category || item.category === stockFilters.category))
+    .map((item) => {
+      if (!hasBatchScopedStockFilter) return item;
+      const matchingBatches = visibleBatches.filter((batch) => String(batch.product_id) === String(item.product_id));
+      return {
+        ...item,
+        quantity: matchingBatches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0),
+        batch_count: matchingBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
+        matching_batch_count: matchingBatches.length,
+      };
+    })
+    .filter((item) => (!hasBatchScopedStockFilter || item.matching_batch_count > 0)
+      && (!stockFilters.status || (stockFilters.status === 'in_stock' ? Number(item.quantity) > 0 : Number(item.quantity) === 0)));
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
   if (!session) return <Login onLogin={login} />;
