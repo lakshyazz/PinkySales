@@ -90,7 +90,13 @@ const readStoredSession = () => {
 };
 
 const currency = (value) => `\u20b9${Number(value || 0).toLocaleString('en-IN')}`;
-const productName = (item) => item?.short_name || item?.product_short_name || item?.display_name || item?.name || item?.product_name || 'Unnamed product';
+const compactModelName = (value) => {
+  const name = String(value || 'Unnamed product').trim();
+  if (name.length <= 60) return name;
+  const firstModel = name.split('/')[0].trim();
+  return firstModel.length <= 60 ? firstModel : `${firstModel.slice(0, 57)}...`;
+};
+const productName = (item) => compactModelName(item?.short_name || item?.product_short_name || item?.display_name || item?.name || item?.product_name);
 const fullModelList = (item) => item?.full_model_list || item?.name || item?.product_name || '';
 const priceLabel = (value) => Number(value) > 0 ? currency(value) : 'Price not set';
 const groupPendingPayments = (rows = []) => {
