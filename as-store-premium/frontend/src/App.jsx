@@ -193,8 +193,13 @@ const initialForms = {
     opening_stock: '', description: '', colours: '',
   },
   stock: { product_id: '', quantity: '' },
+  batch: {
+    product_id: '', quantity: '', purchase_price: '', wholesale_price: '', official_price: '',
+    retail_price: '', colour: '', received_date: new Date().toISOString().slice(0, 10),
+    assigned_user_id: '', notes: '',
+  },
   customer: { name: '', mobile: '', address: '', notes: '' },
-  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', due_date: '2026-06-15', notes: '', items: [{ product_id: '', quantity: 1, total_amount: '' }] },
+  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', due_date: '2026-06-15', notes: '', items: [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }] },
   payment: { sale_id: '', amount: '', note: '' },
   request: { product_id: '', model_name: '', quantity: 1, message: '' },
   transfer: { from_shop_id: '', to_shop_id: '', product_id: '', quantity: '', note: '' },
@@ -495,16 +500,25 @@ function App() {
     shopkeepers: [],
     products: [],
     stock: [],
+    batches: [],
     customers: [],
     sales: [],
     requests: [],
     pending: [],
     reports: null,
     catalog: [],
+    reference: { categories: [], colours: [], brands: [] },
+    priceVisibility: {
+      show_official_price_shopkeeper: true,
+      show_wholesale_price_shopkeeper: false,
+      show_purchase_price_shopkeeper: false,
+    },
   });
   const [selectedShop, setSelectedShop] = useState('');
   const [forms, setForms] = useState(initialForms);
-  const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', shopId: '', min: '', max: '' });
+  const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', category: '', colour: '', shopId: '', min: '', max: '' });
+  const [stockFilters, setStockFilters] = useState({ brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '' });
+  const [newReference, setNewReference] = useState({ type: '', name: '' });
   const [modelSearch, setModelSearch] = useState('');
   const [transferDrawerOpen, setTransferDrawerOpen] = useState(false);
   const [expandedPaymentId, setExpandedPaymentId] = useState('');
@@ -607,11 +621,13 @@ function App() {
     setLoading(true);
     setLoadError('');
     try {
-      const [shops, products] = await Promise.all([
+      const [shops, products, reference, priceVisibility] = await Promise.all([
         authedFetch('/shops'),
         role === 'customer' ? api('/catalog') : authedFetch('/products'),
+        api('/reference-data'),
+        role === 'customer' ? Promise.resolve(data.priceVisibility) : authedFetch('/settings/price-visibility'),
       ]);
-      setData((prev) => ({ ...prev, shops, products, catalog: role === 'customer' ? products : prev.catalog }));
+      setData((prev) => ({ ...prev, shops, products, reference, priceVisibility, catalog: role === 'customer' ? products : prev.catalog }));
     } catch (error) {
       handleLoadError(error, 'Unable to load the workspace. Check whether the local servers are running.');
     } finally {
@@ -633,22 +649,31 @@ function App() {
         if (role === 'customer') set('catalog', await api('/catalog'));
         else set('products', await authedFetch('/products'));
       }
-      if (tab === 'stock' && currentShop) set('stock', await authedFetch(`/stock?shopId=${currentShop}`));
-      if (tab === 'customers' && currentShop) {
-        const [stock, customers, sales] = await Promise.all([
+      if (tab === 'stock' && currentShop) {
+        const [stock, batches, shopkeepers] = await Promise.all([
           authedFetch(`/stock?shopId=${currentShop}`),
+          authedFetch(`/inventory-batches?shopId=${currentShop}`),
+          role === 'superadmin' ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
+        ]);
+        setData((prev) => ({ ...prev, stock, batches, shopkeepers }));
+      }
+      if (tab === 'customers' && currentShop) {
+        const [stock, batches, customers, sales] = await Promise.all([
+          authedFetch(`/stock?shopId=${currentShop}`),
+          authedFetch(`/inventory-batches?shopId=${currentShop}`),
           authedFetch(`/customers?shopId=${currentShop}`),
           authedFetch(`/sales?shopId=${currentShop}`),
         ]);
-        setData((prev) => ({ ...prev, stock, customers, sales }));
+        setData((prev) => ({ ...prev, stock, batches, customers, sales }));
       }
       if (tab === 'sales' && currentShop) {
-        const [stock, customers, sales] = await Promise.all([
+        const [stock, batches, customers, sales] = await Promise.all([
           authedFetch(`/stock?shopId=${currentShop}`),
+          authedFetch(`/inventory-batches?shopId=${currentShop}`),
           authedFetch(`/customers?shopId=${currentShop}`),
           authedFetch(`/sales?shopId=${currentShop}`),
         ]);
-        setData((prev) => ({ ...prev, stock, customers, sales }));
+        setData((prev) => ({ ...prev, stock, batches, customers, sales }));
       }
       if (tab === 'requests') set('requests', await authedFetch(`/stock-requests${scoped}`));
       if (tab === 'payments') set('pending', groupPendingPayments(await authedFetch(`/pending-payments${scoped}`)));
@@ -847,6 +872,84 @@ function App() {
     }
   };
 
+  const addInventoryBatch = async () => {
+    if (!requireShopSelection('Select a shop before adding an inventory batch')) return;
+    try {
+      setSaving(true);
+      await authedFetch('/inventory-batches', {
+        method: 'POST',
+        body: JSON.stringify({ ...forms.batch, shop_id: shopId }),
+      });
+      setForms((prev) => ({ ...prev, batch: initialForms.batch }));
+      showToast('Price batch added and stock updated');
+      await loadTab('stock', shopId);
+    } catch (error) {
+      showToast(error.message || 'Unable to add inventory batch');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addReferenceOption = async (type, name) => {
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return showToast(`Enter a new ${type.replace(/s$/, '')} name`);
+    try {
+      setSaving(true);
+      await authedFetch(`/reference-data/${type}`, { method: 'POST', body: JSON.stringify({ name: cleanName }) });
+      const reference = await api('/reference-data');
+      setData((prev) => ({ ...prev, reference }));
+      setNewReference({ type: '', name: '' });
+      showToast(`${cleanName} added`);
+    } catch (error) {
+      showToast(error.message || `Unable to add ${type.replace(/s$/, '')}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const updatePriceVisibility = async (key, checked) => {
+    try {
+      const priceVisibility = await authedFetch('/settings/price-visibility', {
+        method: 'PUT',
+        body: JSON.stringify({ [key]: checked }),
+      });
+      setData((prev) => ({ ...prev, priceVisibility }));
+      showToast('Shopkeeper price visibility updated');
+    } catch (error) {
+      showToast(error.message || 'Unable to update price visibility');
+    }
+  };
+
+  const exportExcel = async (type = 'stock', filters = {}) => {
+    try {
+      setSaving(true);
+      const params = new URLSearchParams({ type, ...(shopId ? { shopId } : {}), ...filters });
+      const rows = await authedFetch(`/export-data?${params.toString()}`);
+      if (!rows.length) return showToast('No matching data to export');
+      const { default: writeExcelFile } = await import('write-excel-file/browser');
+      const headers = Object.keys(rows[0]);
+      const sheetRows = [
+        headers.map((header) => ({
+          value: header.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+          fontWeight: 'bold',
+          backgroundColor: '#DFF7F7',
+        })),
+        ...rows.map((row) => headers.map((header) => {
+          const value = row[header];
+          if (Array.isArray(value)) return value.join(', ');
+          if (value && typeof value === 'object') return JSON.stringify(value);
+          return value ?? '';
+        })),
+      ];
+      await writeExcelFile(sheetRows).toFile(`as-store-${type}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+      showToast('Excel export created');
+    } catch (error) {
+      showToast(error.message || 'Unable to export Excel file');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const salePriceFor = (productId) => {
     const stockItem = data.stock.find((item) => String(item.product_id) === String(productId));
     const product = data.products.find((item) => String(item.id) === String(productId));
@@ -854,12 +957,13 @@ function App() {
   };
 
   const updateSaleItemProduct = (index, productId) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }])];
     const qty = Math.max(Number(currentItems[index]?.quantity || 1), 1);
     const price = salePriceFor(productId);
     
     currentItems[index] = {
       product_id: productId,
+      batch_id: '',
       quantity: qty,
       total_amount: price ? String(price * qty) : (currentItems[index]?.total_amount || ''),
     };
@@ -878,8 +982,14 @@ function App() {
     });
   };
 
+  const updateSaleItemBatch = (index, batchId) => {
+    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }])];
+    currentItems[index] = { ...currentItems[index], batch_id: batchId };
+    setForms({ ...forms, sale: { ...forms.sale, items: currentItems } });
+  };
+
   const updateSaleItemQuantity = (index, quantity) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }])];
     const numericQuantity = Math.max(Number(quantity || 0), 0);
     const price = salePriceFor(currentItems[index]?.product_id);
 
@@ -903,7 +1013,7 @@ function App() {
   };
 
   const updateSaleItemPrice = (index, priceVal) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }])];
     currentItems[index] = {
       ...currentItems[index],
       total_amount: priceVal,
@@ -920,8 +1030,8 @@ function App() {
   };
 
   const addSaleItem = () => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }])];
-    currentItems.push({ product_id: '', quantity: 1, total_amount: '' });
+    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }])];
+    currentItems.push({ product_id: '', batch_id: '', quantity: 1, total_amount: '' });
     setForms({
       ...forms,
       sale: {
@@ -975,6 +1085,7 @@ function App() {
           body: JSON.stringify({
             shop_id: shopId,
             product_id: item.product_id,
+            batch_id: item.batch_id || null,
             customer_id: customerId,
             quantity: item.quantity,
             total_amount: String(itemTotal),
@@ -989,7 +1100,7 @@ function App() {
         ...prev,
         sale: {
           ...initialForms.sale,
-          items: [{ product_id: '', quantity: 1, total_amount: '' }],
+          items: [{ product_id: '', batch_id: '', quantity: 1, total_amount: '' }],
         },
       }));
       showToast('Sales created, stock reduced, pending updated');
@@ -1641,7 +1752,31 @@ function App() {
     const matchesShop = !deferredCatalogFilters.shopId || String(product.available_shops || '').toLowerCase().includes(
       data.shops.find((shop) => String(shop.id) === String(deferredCatalogFilters.shopId))?.name.toLowerCase() || ''
     );
-    return matchesSearch && matchesShop;
+    const matchesBrand = !deferredCatalogFilters.brand || product.brand === deferredCatalogFilters.brand;
+    const matchesCategory = !deferredCatalogFilters.category || product.category === deferredCatalogFilters.category;
+    const matchesColour = !deferredCatalogFilters.colour || (product.colours || []).includes(deferredCatalogFilters.colour);
+    return matchesSearch && matchesShop && matchesBrand && matchesCategory && matchesColour;
+  });
+
+  const visibleBatches = data.batches.filter((batch) => {
+    const matchesBrand = !stockFilters.brand || batch.brand === stockFilters.brand;
+    const matchesCategory = !stockFilters.category || batch.category === stockFilters.category;
+    const matchesColour = !stockFilters.colour || batch.colour === stockFilters.colour;
+    const matchesStatus = !stockFilters.status
+      || (stockFilters.status === 'in_stock' ? Number(batch.quantity_remaining) > 0 : Number(batch.quantity_remaining) === 0);
+    const matchesBatch = !stockFilters.batch || String(batch.id) === String(stockFilters.batch);
+    const matchesShopkeeper = !stockFilters.shopkeeperId || String(batch.assigned_user_id) === String(stockFilters.shopkeeperId);
+    return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch && matchesShopkeeper;
+  });
+
+  const visibleStock = data.stock.filter((item) => {
+    const matchesBrand = !stockFilters.brand || item.brand === stockFilters.brand;
+    const matchesCategory = !stockFilters.category || item.category === stockFilters.category;
+    const matchesColour = !stockFilters.colour || (item.colours || []).includes(stockFilters.colour);
+    const matchesStatus = !stockFilters.status
+      || (stockFilters.status === 'in_stock' ? Number(item.quantity) > 0 : Number(item.quantity) === 0);
+    const matchesBatch = (!stockFilters.batch && !stockFilters.shopkeeperId) || visibleBatches.some((batch) => String(batch.product_id) === String(item.product_id));
+    return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch;
   });
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
@@ -1966,7 +2101,18 @@ function App() {
                     <Input label="Short display name" value={forms.product.short_name} onChange={(v) => setForms({ ...forms, product: { ...forms.product, short_name: v } })} />
                     <Input label="Full compatible models" value={forms.product.full_model_list} onChange={(v) => setForms({ ...forms, product: { ...forms.product, full_model_list: v } })} />
                     <Input label="Brand" value={forms.product.brand} onChange={(v) => setForms({ ...forms, product: { ...forms.product, brand: v } })} />
-                    <Input label="Category" value={forms.product.category} onChange={(v) => setForms({ ...forms, product: { ...forms.product, category: v } })} />
+                    <Select
+                      label="Product Category"
+                      value={forms.product.category}
+                      onChange={(v) => v === '__new__' ? setNewReference({ type: 'categories', name: '' }) : setForms({ ...forms, product: { ...forms.product, category: v } })}
+                      options={[...data.reference.categories.map((item) => [item.name, item.name]), ['__new__', '+ Add New Category']]}
+                    />
+                    {newReference.type === 'categories' && (
+                      <div className="inline-reference-control">
+                        <Input label="New category" value={newReference.name} onChange={(name) => setNewReference({ type: 'categories', name })} />
+                        <button className="soft" type="button" onClick={() => addReferenceOption('categories', newReference.name)}>Add category</button>
+                      </div>
+                    )}
                     <Input label="Official price" type="number" value={forms.product.official_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, official_price: v } })} />
                     <Input label="Purchase price" type="number" value={forms.product.purchase_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, purchase_price: v } })} />
                     <Input label="Sale price" type="number" value={forms.product.sale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, sale_price: v } })} />
@@ -1974,9 +2120,43 @@ function App() {
                     <Input label="Retail price" type="number" value={forms.product.retail_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, retail_price: v } })} />
                     {!editingProductId && <Input label="Opening stock" type="number" value={forms.product.opening_stock} onChange={(v) => setForms({ ...forms, product: { ...forms.product, opening_stock: v } })} />}
                     <Input label="Description" value={forms.product.description} onChange={(v) => setForms({ ...forms, product: { ...forms.product, description: v } })} />
-                    <Input label="Colours (comma separated)" value={forms.product.colours} onChange={(v) => setForms({ ...forms, product: { ...forms.product, colours: v } })} />
+                    <Select
+                      label="Add Colour"
+                      value=""
+                      onChange={(v) => {
+                        if (v === '__new__') return setNewReference({ type: 'colours', name: '' });
+                        const selected = forms.product.colours.split(',').map((item) => item.trim()).filter(Boolean);
+                        if (v && !selected.includes(v)) setForms({ ...forms, product: { ...forms.product, colours: [...selected, v].join(', ') } });
+                      }}
+                      options={[...data.reference.colours.map((item) => [item.name, item.name]), ['__new__', '+ Add New Colour']]}
+                    />
+                    <Input label="Selected colours" value={forms.product.colours} onChange={(v) => setForms({ ...forms, product: { ...forms.product, colours: v } })} />
+                    {newReference.type === 'colours' && (
+                      <div className="inline-reference-control">
+                        <Input label="New colour" value={newReference.name} onChange={(name) => setNewReference({ type: 'colours', name })} />
+                        <button className="soft" type="button" onClick={() => addReferenceOption('colours', newReference.name)}>Add colour</button>
+                      </div>
+                    )}
                     {editingProductId && <button className="soft" type="button" onClick={() => { setEditingProductId(''); setForms((prev) => ({ ...prev, product: initialForms.product })); }}>Cancel edit</button>}
                   </FormPanel>
+                )}
+                <section className="panel utility-panel">
+                  <div>
+                    <h2>Product data tools</h2>
+                    <p>Export the complete product and model list as an Excel workbook.</p>
+                  </div>
+                  <button className="soft" type="button" onClick={() => exportExcel('products')}><Download size={17} /> Export products/models</button>
+                </section>
+                {role === 'superadmin' && (
+                  <section className="panel utility-panel price-visibility-panel">
+                    <div>
+                      <h2>Shopkeeper price visibility</h2>
+                      <p>Purchase price remains hidden unless explicitly enabled.</p>
+                    </div>
+                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_official_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_official_price_shopkeeper', e.target.checked)} /> Official price</label>
+                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_wholesale_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_wholesale_price_shopkeeper', e.target.checked)} /> Wholesale price</label>
+                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_purchase_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_purchase_price_shopkeeper', e.target.checked)} /> Purchase price</label>
+                  </section>
                 )}
                 <CardGrid className="product-grid" items={data.products} render={(product) => (
                   <>
@@ -1992,11 +2172,11 @@ function App() {
                     </p>
                     <p className="text-xs text-slate-500">{product.brand}{product.colours?.length ? ` · ${product.colours.join(', ')}` : ''}</p>
                     <div className="price-stack">
-                      <span><small>Official</small><strong>{priceLabel(product.official_price)}</strong></span>
+                      {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <span><small>Official</small><strong>{priceLabel(product.official_price)}</strong></span>}
                       <span><small>Sale</small><strong>{priceLabel(product.sale_price)}</strong></span>
                       <span><small>Retail</small><strong>{priceLabel(product.retail_price)}</strong></span>
-                      {role === 'superadmin' && <span><small>Purchase</small><strong>{priceLabel(product.purchase_price)}</strong></span>}
-                      {role === 'superadmin' && <span><small>Wholesale</small><strong>{priceLabel(product.wholesale_price)}</strong></span>}
+                      {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span><small>Purchase</small><strong>{priceLabel(product.purchase_price)}</strong></span>}
+                      {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <span><small>Wholesale</small><strong>{priceLabel(product.wholesale_price)}</strong></span>}
                     </div>
                     <div className="flex gap-2 w-full mt-3">
                       <button className="soft flex-1 !min-h-[38px] text-xs font-bold" type="button" onClick={() => setSelectedProductDetails(product)}>View Details</button>
@@ -2059,10 +2239,12 @@ function App() {
                       {product.colours?.length ? <div className="colour-list">{product.colours.map((colour) => <span key={colour}>{colour}</span>)}</div> : null}
                       
                       <div className="w-full pt-3 border-t border-slate-100 flex flex-col gap-2 mt-auto">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[10px] text-slate-400 uppercase font-black">Official Price</span>
-                          <strong className="text-teal font-extrabold text-base">{priceLabel(product.official_price)}</strong>
-                        </div>
+                        {(role === 'customer' || role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-[10px] text-slate-400 uppercase font-black">{role === 'customer' ? 'Retail Price' : 'Official Price'}</span>
+                            <strong className="text-teal font-extrabold text-base">{priceLabel(role === 'customer' ? product.retail_price : product.official_price)}</strong>
+                          </div>
+                        )}
                         {role === 'customer' && (
                           <div className="text-[11px] text-slate-500 bg-slate-50 rounded-lg p-2 mt-1 border border-slate-100/50">
                             <span className="font-bold text-slate-700 block mb-0.5">Available At:</span>
@@ -2086,6 +2268,36 @@ function App() {
                   <Select label="Product" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
                   <Input label="Available quantity" type="number" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
                 </FormPanel>
+                <FormPanel title="Add purchase-price batch" action={saving ? 'Saving...' : 'Add batch'} onSubmit={addInventoryBatch} disabled={saving || needsSpecificShop}>
+                  <Select label="Product" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
+                  <Input label="Quantity received" type="number" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
+                  {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <Input label="Purchase price" type="number" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />}
+                  {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <Input label="Wholesale price" type="number" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />}
+                  {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <Input label="Official price" type="number" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />}
+                  <Input label="Retail price" type="number" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
+                  <Select label="Colour" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
+                  <Input label="Received date" type="date" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
+                  {role === 'superadmin' && <Select label="Assign to shopkeeper (optional)" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
+                  <Input label="Batch notes" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
+                </FormPanel>
+                <section className="panel stock-filter-panel">
+                  <div className="utility-panel">
+                    <div>
+                      <h2>Stock filters and Excel export</h2>
+                      <p>Select a brand, category, colour, status, or purchase-price batch.</p>
+                    </div>
+                    <button className="soft" type="button" onClick={() => exportExcel('stock', { brand: stockFilters.brand, category: stockFilters.category, colour: stockFilters.colour, status: stockFilters.status, shopkeeperId: stockFilters.shopkeeperId, batchId: stockFilters.batch })}><Download size={17} /> Export filtered stock</button>
+                    <button className="soft" type="button" onClick={() => exportExcel('stock')}><Download size={17} /> Export all price batches</button>
+                  </div>
+                  <div className="filter-grid">
+                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} />
+                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} />
+                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} />
+                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} />
+                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} />
+                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
+                  </div>
+                </section>
                 {role === 'superadmin' && (
                   <section className="panel transfer-launch">
                     <div>
@@ -2095,7 +2307,7 @@ function App() {
                     <button className="primary" type="button" onClick={() => setTransferDrawerOpen(true)}><Send size={17} /> Transfer stock</button>
                   </section>
                 )}
-                {data.stock.length ? (
+                {visibleStock.length ? (
                   <motion.div 
                     variants={listVariants}
                     initial="hidden"
@@ -2103,7 +2315,7 @@ function App() {
                     viewport={{ once: true, margin: "-10px" }}
                     className="table panel"
                   >
-                    {data.stock.map((item) => (
+                    {visibleStock.map((item) => (
                       <motion.div variants={itemVariants} className="row" key={item.id}>
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
@@ -2117,11 +2329,11 @@ function App() {
                         </span>
                         <span>
                           <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Price</span>
-                          <strong>{priceLabel(item.official_price)}</strong>
+                          <strong>{priceLabel(item.official_price || item.retail_price)}</strong>
                         </span>
                         <div className="flex flex-col items-end">
                           <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-1">Stock Level</span>
-                          <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs</strong>
+                          <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs · {item.batch_count} batches</strong>
                         </div>
                       </motion.div>
                     ))}
@@ -2129,6 +2341,19 @@ function App() {
                 ) : (
                   <Empty title="No stock records found" />
                 )}
+                <section className="panel">
+                  <h2>Purchase-price batches</h2>
+                  <div className="table batch-table">
+                    {visibleBatches.length ? visibleBatches.map((batch) => (
+                      <div className="row" key={batch.id}>
+                        <span><b title={fullModelList(batch)}>{productName(batch)}</b><small>{batch.brand} · {batch.colour || 'No colour'} · {batch.received_date}</small></span>
+                        {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span><small>Purchase price</small><strong>{priceLabel(batch.purchase_price)}</strong></span>}
+                        <span><small>Assigned inventory</small><strong>{batch.assigned_user_name || 'Shared shop stock'}</strong></span>
+                        <span><small>Remaining</small><strong className={`status-badge ${batch.quantity_remaining <= 3 ? 'low-stock' : 'stock-ok'}`}>{batch.quantity_remaining} / {batch.quantity_received}</strong></span>
+                      </div>
+                    )) : <Empty title="No matching price batches" />}
+                  </div>
+                </section>
               </section>
             </PageWrapper>
           )}
@@ -2159,6 +2384,17 @@ function App() {
                               value={item.product_id} 
                               onChange={(v) => updateSaleItemProduct(idx, v)} 
                               options={data.stock.filter((s) => s.quantity > 0 || String(s.product_id) === String(item.product_id)).map((p) => [p.product_id, `${productName(p)} · ${p.quantity} pcs left`])}
+                            />
+                          </div>
+                          <div style={{ width: '220px' }}>
+                            <Select
+                              label="Price batch (FIFO if blank)"
+                              value={item.batch_id || ''}
+                              onChange={(v) => updateSaleItemBatch(idx, v)}
+                              options={data.batches.filter((batch) => String(batch.product_id) === String(item.product_id) && Number(batch.quantity_remaining) > 0).map((batch) => [
+                                batch.id,
+                                `${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`,
+                              ])}
                             />
                           </div>
                           <div style={{ width: '120px' }}>
@@ -2235,6 +2471,17 @@ function App() {
                               value={item.product_id} 
                               onChange={(v) => updateSaleItemProduct(idx, v)} 
                               options={data.stock.filter((s) => s.quantity > 0 || String(s.product_id) === String(item.product_id)).map((p) => [p.product_id, `${productName(p)} · ${p.quantity} pcs left`])}
+                            />
+                          </div>
+                          <div style={{ width: '220px' }}>
+                            <Select
+                              label="Price batch (FIFO if blank)"
+                              value={item.batch_id || ''}
+                              onChange={(v) => updateSaleItemBatch(idx, v)}
+                              options={data.batches.filter((batch) => String(batch.product_id) === String(item.product_id) && Number(batch.quantity_remaining) > 0).map((batch) => [
+                                batch.id,
+                                `${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`,
+                              ])}
                             />
                           </div>
                           <div style={{ width: '120px' }}>
@@ -2461,6 +2708,9 @@ function App() {
               <section className="space">
                 <div className="catalog-toolbar panel">
                   <div className="searchbox"><Search size={18} /><input placeholder="Search brand or model" value={catalogFilters.search} onChange={(e) => setCatalogFilters({ ...catalogFilters, search: e.target.value })} /></div>
+                  <select value={catalogFilters.brand} onChange={(e) => setCatalogFilters({ ...catalogFilters, brand: e.target.value })}><option value="">All brands</option>{data.reference.brands.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
+                  <select value={catalogFilters.category} onChange={(e) => setCatalogFilters({ ...catalogFilters, category: e.target.value })}><option value="">All categories</option>{data.reference.categories.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
+                  <select value={catalogFilters.colour} onChange={(e) => setCatalogFilters({ ...catalogFilters, colour: e.target.value })}><option value="">All colours</option>{data.reference.colours.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select>
                   <select value={catalogFilters.shopId} onChange={(e) => setCatalogFilters({ ...catalogFilters, shopId: e.target.value })}><option value="">All shops</option>{data.shops.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
                   <button className="primary" onClick={() => loadTab('catalog')}><Search size={17} /> Search</button>
                 </div>
@@ -2929,25 +3179,25 @@ function App() {
                   <div>
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-3">Pricing details</span>
                     <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 divide-y divide-slate-100">
-                      <div className="flex justify-between items-center py-2.5">
+                      {(role === 'superadmin' || (role === 'shopkeeper' && data.priceVisibility.show_official_price_shopkeeper)) && <div className="flex justify-between items-center py-2.5">
                         <span className="text-sm font-bold text-slate-500">Official Price</span>
                         <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.official_price)}</strong>
-                      </div>
-                      <div className="flex justify-between items-center py-2.5">
+                      </div>}
+                      {role !== 'customer' && <div className="flex justify-between items-center py-2.5">
                         <span className="text-sm font-bold text-slate-500">Sale Price</span>
                         <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.sale_price)}</strong>
-                      </div>
+                      </div>}
                       <div className="flex justify-between items-center py-2.5">
                         <span className="text-sm font-bold text-slate-500">Retail Price</span>
                         <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.retail_price)}</strong>
                       </div>
-                      {role === 'superadmin' && selectedProductDetails.purchase_price !== undefined && selectedProductDetails.purchase_price !== null && (
+                      {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && selectedProductDetails.purchase_price !== undefined && selectedProductDetails.purchase_price !== null && (
                         <div className="flex justify-between items-center py-2.5">
                           <span className="text-sm font-bold text-slate-500">Purchase Price</span>
                           <strong className="text-rose-600 font-extrabold text-base">{priceLabel(selectedProductDetails.purchase_price)}</strong>
                         </div>
                       )}
-                      {role === 'superadmin' && selectedProductDetails.wholesale_price !== undefined && selectedProductDetails.wholesale_price !== null && (
+                      {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && selectedProductDetails.wholesale_price !== undefined && selectedProductDetails.wholesale_price !== null && (
                         <div className="flex justify-between items-center py-2.5">
                           <span className="text-sm font-bold text-slate-500">Wholesale Price</span>
                           <strong className="text-indigo-600 font-extrabold text-base">{priceLabel(selectedProductDetails.wholesale_price)}</strong>
