@@ -93,6 +93,37 @@ const currency = (value) => `\u20b9${Number(value || 0).toLocaleString('en-IN')}
 const productName = (item) => item?.short_name || item?.product_short_name || item?.display_name || item?.name || item?.product_name || 'Unnamed product';
 const fullModelList = (item) => item?.full_model_list || item?.name || item?.product_name || '';
 const priceLabel = (value) => Number(value) > 0 ? currency(value) : 'Price not set';
+const groupPendingPayments = (rows = []) => {
+  if (rows.every((row) => Array.isArray(row.items))) return rows;
+  const groups = new Map();
+  rows.forEach((sale) => {
+    const key = `${sale.shop_id}:${sale.customer_id}`;
+    const group = groups.get(key) || {
+      id: `customer-${key}`,
+      customer_id: sale.customer_id,
+      shop_id: sale.shop_id,
+      customer_name: sale.customer_name,
+      mobile: sale.mobile,
+      address: sale.address,
+      shop_name: sale.shop_name,
+      shop_area: sale.shop_area,
+      shop_address: sale.shop_address,
+      shop_phone: sale.shop_phone,
+      total_amount: 0,
+      paid_amount: 0,
+      pending_amount: 0,
+      due_date: sale.due_date,
+      items: [],
+    };
+    group.total_amount += Number(sale.total_amount || 0);
+    group.paid_amount += Number(sale.paid_amount || 0);
+    group.pending_amount += Number(sale.pending_amount || 0);
+    if (sale.due_date && (!group.due_date || sale.due_date < group.due_date)) group.due_date = sale.due_date;
+    group.items.push(sale);
+    groups.set(key, group);
+  });
+  return [...groups.values()];
+};
 const navByRole = {
   superadmin: [
     ['dashboard', 'Dashboard', BarChart3],
@@ -613,7 +644,7 @@ function App() {
         setData((prev) => ({ ...prev, stock, customers, sales }));
       }
       if (tab === 'requests') set('requests', await authedFetch(`/stock-requests${scoped}`));
-      if (tab === 'payments') set('pending', await authedFetch(`/pending-payments${scoped}`));
+      if (tab === 'payments') set('pending', groupPendingPayments(await authedFetch(`/pending-payments${scoped}`)));
       if (tab === 'reports') set('reports', await authedFetch(`/reports${scoped}`));
       if (tab === 'catalog') set('catalog', await api(`/catalog?${new URLSearchParams(catalogFilters).toString()}`));
     } catch (error) {
@@ -642,7 +673,7 @@ function App() {
         stock,
         customers,
         sales,
-        pending,
+        pending: groupPendingPayments(pending),
         reports
       });
     } catch (err) {
@@ -1013,14 +1044,34 @@ function App() {
   const recordPayment = async (paymentEntry) => {
     const amount = forms.payment.sale_id === String(paymentEntry.id) ? forms.payment.amount : '';
     if (!amount) return showToast('Enter payment amount first');
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) return showToast('Enter a valid payment amount');
+    if (numericAmount > Number(paymentEntry.pending_amount || 0)) return showToast('Payment cannot exceed the pending balance');
     try {
       setSaving(true);
-      await authedFetch('/payments', {
-        method: 'POST',
-        body: JSON.stringify(paymentEntry.items
-          ? { customer_id: paymentEntry.customer_id, shop_id: paymentEntry.shop_id, amount, note: forms.payment.note }
-          : { sale_id: paymentEntry.id, amount, note: forms.payment.note }),
-      });
+      try {
+        await authedFetch('/payments', {
+          method: 'POST',
+          body: JSON.stringify(paymentEntry.items
+            ? { customer_id: paymentEntry.customer_id, shop_id: paymentEntry.shop_id, amount: numericAmount, note: forms.payment.note }
+            : { sale_id: paymentEntry.id, amount: numericAmount, note: forms.payment.note }),
+        });
+      } catch (error) {
+        if (!paymentEntry.items || error?.status !== 400 || !/sale and amount|required/i.test(error.message)) throw error;
+        let remaining = numericAmount;
+        const sales = [...paymentEntry.items].sort((a, b) => String(a.due_date || '').localeCompare(String(b.due_date || '')) || Number(a.id) - Number(b.id));
+        for (const sale of sales) {
+          if (remaining <= 0) break;
+          const allocated = Math.min(remaining, Number(sale.pending_amount || 0));
+          if (allocated > 0) {
+            await authedFetch('/payments', {
+              method: 'POST',
+              body: JSON.stringify({ sale_id: sale.id, amount: allocated, note: forms.payment.note }),
+            });
+            remaining -= allocated;
+          }
+        }
+      }
       setForms((prev) => ({ ...prev, payment: initialForms.payment }));
       showToast('Payment recorded');
       await loadTab('payments', shopId);
