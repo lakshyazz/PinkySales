@@ -676,14 +676,22 @@ app.post('/api/inventory-batches', authenticateToken, requireShopStaff, async (r
 
 app.get('/api/customers', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = assertShopAccess(req, scopeShopId(req));
-  const rows = await allRecords(`
+  const params = [shopId];
+  let query = `
     SELECT c.*, COALESCE(SUM(s.pending_amount), 0) AS pending
     FROM customers c
     LEFT JOIN sales s ON s.customer_id = c.id
     WHERE c.shop_id = ?
+  `;
+  if (isShopStaffRole(req.user.role)) {
+    query += ' AND (c.created_by IS NULL OR c.created_by = ?)';
+    params.push(req.user.id);
+  }
+  query += `
     GROUP BY c.id
     ORDER BY c.created_at DESC
-  `, [shopId]);
+  `;
+  const rows = await allRecords(query, params);
   res.json(rows);
 });
 
@@ -697,8 +705,8 @@ app.post('/api/customers', authenticateToken, requireShopStaff, async (req, res)
       return res.status(200).json(existing);
     }
     const result = await runQuery(
-      'INSERT INTO customers (shop_id, name, mobile, address, notes) VALUES (?, ?, ?, ?, ?)',
-      [shopId, name, mobile, address || '', notes || '']
+      'INSERT INTO customers (shop_id, name, mobile, address, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+      [shopId, name, mobile, address || '', notes || '', req.user.id]
     );
     await audit(req, 'Created customer', 'customer', result.id, name);
     res.status(201).json({ id: result.id, shop_id: shopId, name, mobile, address, notes });
@@ -709,7 +717,8 @@ app.post('/api/customers', authenticateToken, requireShopStaff, async (req, res)
 
 app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = assertShopAccess(req, scopeShopId(req));
-  const rows = await allRecords(`
+  const params = [shopId];
+  let query = `
     SELECT sa.*, p.name AS product_name, p.short_name AS product_short_name, p.full_model_list, p.brand, p.category, p.description,
       c.name AS customer_name, c.mobile, c.address,
       sh.name AS shop_name, sh.area AS shop_area, sh.address AS shop_address, sh.phone AS shop_phone
@@ -718,8 +727,13 @@ app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
     JOIN shops sh ON sh.id = sa.shop_id
     LEFT JOIN customers c ON c.id = sa.customer_id
     WHERE sa.shop_id = ?
-    ORDER BY sa.id DESC
-  `, [shopId]);
+  `;
+  if (isShopStaffRole(req.user.role)) {
+    query += ' AND (sa.created_by IS NULL OR sa.created_by = ?)';
+    params.push(req.user.id);
+  }
+  query += ' ORDER BY sa.id DESC';
+  const rows = await allRecords(query, params);
   res.json(rows);
 });
 
@@ -747,8 +761,8 @@ app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => 
       }
       const pending = Math.max(money(total_amount) - money(paid_amount), 0);
       const insertResult = await tx.runQuery(
-        'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [shopId, product_id, customer_id, saleQuantity, total_amount, paid_amount || 0, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid']
+        'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [shopId, product_id, customer_id, saleQuantity, total_amount, paid_amount || 0, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid', req.user.id]
       );
       let remaining = saleQuantity;
       for (const batch of batches) {
@@ -833,6 +847,10 @@ app.put('/api/stock-requests/:id', authenticateToken, requireSuperAdmin, async (
 
 app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);
+  const params = [];
+  if (shopId) params.push(shopId);
+  if (isShopStaffRole(req.user.role)) params.push(req.user.id);
+
   const rows = await allRecords(`
     SELECT sa.*, p.name AS product_name, p.short_name AS product_short_name, p.full_model_list, p.brand, p.category, p.description,
       c.name AS customer_name, c.mobile, c.address,
@@ -842,8 +860,9 @@ app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req
     JOIN customers c ON c.id = sa.customer_id
     JOIN shops sh ON sh.id = sa.shop_id
     WHERE sa.pending_amount > 0 ${shopId ? 'AND sa.shop_id = ?' : ''}
+      ${isShopStaffRole(req.user.role) ? 'AND (sa.created_by IS NULL OR sa.created_by = ?)' : ''}
     ORDER BY sa.due_date ASC, sa.id DESC
-  `, shopId ? [shopId] : []);
+  `, params);
     const grouped = new Map();
   rows.forEach((sale) => {
     const key = String(sale.mobile || sale.customer_id);
@@ -895,6 +914,10 @@ app.post('/api/payments', authenticateToken, requireShopStaff, async (req, res) 
         if (userShopId) {
           query += ' AND s.shop_id = ?';
           params.push(userShopId);
+        }
+        if (isShopStaffRole(req.user.role)) {
+          query += ' AND (s.created_by IS NULL OR s.created_by = ?)';
+          params.push(req.user.id);
         }
         query += ' ORDER BY s.due_date ASC, s.id ASC';
 

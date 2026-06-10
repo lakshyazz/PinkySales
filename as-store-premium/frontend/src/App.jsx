@@ -920,31 +920,89 @@ function App() {
     }
   };
 
-  const exportExcel = async (type = 'stock', filters = {}) => {
+  const downloadCsv = (fileName, rows) => {
+    const escapeCsvValue = (value) => {
+      const normalized = Array.isArray(value)
+        ? value.join(', ')
+        : value && typeof value === 'object'
+          ? JSON.stringify(value)
+          : value ?? '';
+      const stringValue = String(normalized);
+      return /[",\n]/.test(stringValue) ? `"${stringValue.replace(/"/g, '""')}"` : stringValue;
+    };
+
+    const csvContent = rows
+      .map((row) => row.map((value) => escapeCsvValue(value)).join(','))
+      .join('\n');
+    const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsv = async (type = 'stock', filters = {}) => {
     try {
       setSaving(true);
       const params = new URLSearchParams({ type, ...(shopId ? { shopId } : {}), ...filters });
       const rows = await authedFetch(`/export-data?${params.toString()}`);
       if (!rows.length) return showToast('No matching data to export');
-      const { default: writeExcelFile } = await import('write-excel-file/browser');
-      const headers = Object.keys(rows[0]);
-      const sheetRows = [
-        headers.map((header) => ({
-          value: header.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
-          fontWeight: 'bold',
-          backgroundColor: '#DFF7F7',
-        })),
-        ...rows.map((row) => headers.map((header) => {
-          const value = row[header];
-          if (Array.isArray(value)) return value.join(', ');
-          if (value && typeof value === 'object') return JSON.stringify(value);
-          return value ?? '';
-        })),
+
+      let columnsMapping = [];
+      if (type === 'products') {
+        columnsMapping = [
+          { label: 'Product Name', key: 'short_name' },
+          { label: 'Model Name', key: 'full_model_list' },
+          { label: 'Brand', key: 'brand' },
+          { label: 'Category', key: 'category' },
+          { label: 'Colour', key: 'colours' },
+          { label: 'Purchase Price', key: 'purchase_price' },
+          { label: 'Wholesale Price', key: 'wholesale_price' },
+          { label: 'Official Price', key: 'official_price' },
+          { label: 'Retail Price', key: 'retail_price' }
+        ];
+      } else {
+        columnsMapping = [
+          { label: 'Product Name', key: 'product_name' },
+          { label: 'Model Name', key: 'model_name' },
+          { label: 'Brand', key: 'brand' },
+          { label: 'Category', key: 'category' },
+          { label: 'Colour', key: 'colour' },
+          { label: 'Purchase Price', key: 'purchase_price' },
+          { label: 'Wholesale Price', key: 'wholesale_price' },
+          { label: 'Official/Retail Price', key: 'retail_price' },
+          { label: 'Quantity', key: 'quantity' },
+          { label: 'Shopkeeper Name', key: 'shopkeeper_name' },
+          { label: 'Date Added', key: 'date_added' },
+          { label: 'Stock Status', key: 'stock_status' }
+        ];
+      }
+
+      const sampleRow = rows[0];
+      const activeColumns = columnsMapping.filter((col) => {
+        if (col.key === 'retail_price' && sampleRow.retail_price === undefined) {
+          if (sampleRow.official_price !== undefined) {
+            col.key = 'official_price';
+            return true;
+          }
+          return false;
+        }
+        return sampleRow[col.key] !== undefined;
+      });
+
+      const csvRows = [
+        activeColumns.map((col) => col.label),
+        ...rows.map((row) => activeColumns.map((col) => row[col.key] ?? '')),
       ];
-      await writeExcelFile(sheetRows).toFile(`as-store-${type}-${new Date().toISOString().slice(0, 10)}.xlsx`);
-      showToast('Excel export created');
+
+      downloadCsv(`as-store-${type}-${new Date().toISOString().slice(0, 10)}.csv`, csvRows);
+      showToast('CSV export created');
     } catch (error) {
-      showToast(error.message || 'Unable to export Excel file');
+      showToast(error.message || 'Unable to export CSV file');
     } finally {
       setSaving(false);
     }
@@ -2150,9 +2208,9 @@ function App() {
                 <section className="panel utility-panel">
                   <div>
                     <h2>Product data tools</h2>
-                    <p>Export the complete product and model list as an Excel workbook.</p>
+                    <p>Export the complete product and model list as a CSV file.</p>
                   </div>
-                  <button className="soft" type="button" onClick={() => exportExcel('products')}><Download size={17} /> Export products/models</button>
+                  <button className="soft" type="button" onClick={() => exportCsv('products')}><Download size={17} /> Export products/models CSV</button>
                 </section>
                 {role === 'superadmin' && (
                   <section className="panel utility-panel price-visibility-panel">
@@ -2290,19 +2348,77 @@ function App() {
                 <section className="panel stock-filter-panel">
                   <div className="utility-panel">
                     <div>
-                      <h2>Stock filters and Excel export</h2>
-                      <p>Select a brand, category, colour, status, or purchase-price batch.</p>
+                      <h2>Stock filters and CSV export</h2>
+                      <p>Filter by brand, category, colour, status, or batch, and export to CSV.</p>
                     </div>
-                    <button className="soft" type="button" onClick={() => exportExcel('stock', { brand: stockFilters.brand, category: stockFilters.category, colour: stockFilters.colour, status: stockFilters.status, shopkeeperId: stockFilters.shopkeeperId, batchId: stockFilters.batch })}><Download size={17} /> Export filtered stock</button>
-                    <button className="soft" type="button" onClick={() => exportExcel('stock')}><Download size={17} /> Export all price batches</button>
+                    <div className="flex flex-wrap gap-2.5">
+                      <button className="soft" type="button" onClick={() => exportCsv('products')}>
+                        <Download size={15} /> All Products/Models CSV
+                      </button>
+                      <button className="soft" type="button" onClick={() => {
+                        if (!stockFilters.brand) return showToast('Select a brand in filters first to export brand-wise stock');
+                        exportCsv('stock', { brand: stockFilters.brand });
+                      }}>
+                        <Download size={15} /> Brand-wise Stock CSV
+                      </button>
+                      <button className="soft" type="button" onClick={() => {
+                        if (!stockFilters.category) return showToast('Select a category in filters first to export category-wise stock');
+                        exportCsv('stock', { category: stockFilters.category });
+                      }}>
+                        <Download size={15} /> Category-wise Stock CSV
+                      </button>
+                      <button className="soft" type="button" onClick={() => {
+                        if (role === 'superadmin' && !stockFilters.shopkeeperId) {
+                          return showToast('Select a shopkeeper in filters first to export shopkeeper-wise stock');
+                        }
+                        exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId });
+                      }}>
+                        <Download size={15} /> Shopkeeper-wise Stock CSV
+                      </button>
+                      <button className="soft" type="button" onClick={() => exportCsv('stock', { batchId: stockFilters.batch })}>
+                        <Download size={15} /> Price-Batch-wise Stock CSV
+                      </button>
+                    </div>
                   </div>
+
+                  <div className="brand-pills-bar flex flex-wrap gap-1.5 mb-5 p-1 bg-slate-50/50 rounded-xl border border-slate-100/80">
+                    <button
+                      type="button"
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                        !stockFilters.brand
+                          ? 'bg-teal text-white shadow-sm'
+                          : 'bg-transparent text-slate-600 hover:text-teal hover:bg-teal/5'
+                      }`}
+                      onClick={() => setStockFilters({ ...stockFilters, brand: '' })}
+                    >
+                      All Brands
+                    </button>
+                    {data.reference.brands.map((brand) => {
+                      const isActive = stockFilters.brand === brand.name;
+                      return (
+                        <button
+                          key={brand.id}
+                          type="button"
+                          className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                            isActive
+                              ? 'bg-teal text-white shadow-sm'
+                              : 'bg-transparent text-slate-600 hover:text-teal hover:bg-teal/5'
+                          }`}
+                          onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}
+                        >
+                          {brand.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   <div className="filter-grid">
-                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} />
-                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} />
-                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} />
-                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} />
-                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} />
-                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
+                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
+                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All categories" />
+                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
+                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
+                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
+                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
                   </div>
                 </section>
                 {role === 'superadmin' && (
@@ -3236,12 +3352,12 @@ function Input({ label, value, onChange, type = 'text' }) {
   return <label>{label}<input type={type} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
-function Select({ label, value, onChange, options }) {
+function Select({ label, value, onChange, options, placeholder = 'Select' }) {
   return (
     <label>
       {label}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">Select</option>
+        <option value="">{placeholder}</option>
         {options.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
       </select>
     </label>
