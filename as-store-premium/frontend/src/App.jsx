@@ -11,6 +11,7 @@ import {
   EyeOff,
   FileText,
   IndianRupee,
+  LayoutGrid,
   LogOut,
   Menu,
   Moon,
@@ -138,6 +139,7 @@ const navByRole = {
     ['prices', 'Prices', IndianRupee],
     ['models', 'Models', Smartphone],
     ['stock', 'Stock', Package],
+    ['stock-categories', 'Stock Categories', LayoutGrid],
     ['customers', 'Customers', Users],
     ['requests', 'Requests', Send],
     ['payments', 'Pending', CreditCard],
@@ -146,6 +148,7 @@ const navByRole = {
   shopkeeper: [
     ['dashboard', 'Dashboard', BarChart3],
     ['stock', 'Stock', Package],
+    ['stock-categories', 'Stock Categories', LayoutGrid],
     ['customers', 'Customers', Users],
     ['requests', 'Requests', Send],
     ['sales', 'Create Sale', ReceiptText],
@@ -649,7 +652,7 @@ function App() {
         if (role === 'customer') set('catalog', await api('/catalog'));
         else set('products', await authedFetch('/products'));
       }
-      if (tab === 'stock' && currentShop) {
+      if ((tab === 'stock' || tab === 'stock-categories') && currentShop) {
         const [stock, batches, shopkeepers] = await Promise.all([
           authedFetch(`/stock?shopId=${currentShop}`),
           authedFetch(`/inventory-batches?shopId=${currentShop}`),
@@ -1843,6 +1846,23 @@ function App() {
     })
     .filter((item) => (!hasBatchScopedStockFilter || item.matching_batch_count > 0)
       && (!stockFilters.status || (stockFilters.status === 'in_stock' ? Number(item.quantity) > 0 : Number(item.quantity) === 0)));
+  const categoryStats = [
+    {
+      name: '',
+      label: 'All categories',
+      products: data.stock.length,
+      quantity: data.stock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+    },
+    ...data.reference.categories.map((category) => {
+      const categoryStock = data.stock.filter((item) => item.category === category.name);
+      return {
+        name: category.name,
+        label: category.name,
+        products: categoryStock.length,
+        quantity: categoryStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      };
+    }),
+  ];
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
   if (!session) return <Login onLogin={login} />;
@@ -2329,6 +2349,17 @@ function App() {
           {active === 'stock' && (
             <PageWrapper activeKey="stock" key="stock">
               <section className="space">
+                <section className="stock-workspace-intro">
+                  <div className="stock-workspace-copy">
+                    <span className="stock-eyebrow">Inventory workspace</span>
+                    <h2>Keep daily stock work simple</h2>
+                    <p>Update quantities, receive purchase batches, and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.</p>
+                  </div>
+                  <button className="stock-category-link" type="button" onClick={() => setActive('stock-categories')}>
+                    <span className="stock-category-link-icon"><LayoutGrid size={22} /></span>
+                    <span><b>Open Stock Categories</b><small>Browse, filter, and export inventory</small></span>
+                  </button>
+                </section>
                 <FormPanel title="Set available stock quantity" action="Save quantity" onSubmit={updateStock}>
                   <Select label="Product" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
                   <Input label="Available quantity" type="number" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
@@ -2345,82 +2376,6 @@ function App() {
                   {role === 'superadmin' && <Select label="Assign to shopkeeper (optional)" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
                   <Input label="Batch notes" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
                 </FormPanel>
-                <section className="panel stock-filter-panel">
-                  <div className="utility-panel">
-                    <div>
-                      <h2>Stock filters and CSV export</h2>
-                      <p>Filter by brand, category, colour, status, or batch, and export to CSV.</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2.5">
-                      <button className="soft" type="button" onClick={() => exportCsv('products')}>
-                        <Download size={15} /> All Products/Models CSV
-                      </button>
-                      <button className="soft" type="button" onClick={() => {
-                        if (!stockFilters.brand) return showToast('Select a brand in filters first to export brand-wise stock');
-                        exportCsv('stock', { brand: stockFilters.brand });
-                      }}>
-                        <Download size={15} /> Brand-wise Stock CSV
-                      </button>
-                      <button className="soft" type="button" onClick={() => {
-                        if (!stockFilters.category) return showToast('Select a category in filters first to export category-wise stock');
-                        exportCsv('stock', { category: stockFilters.category });
-                      }}>
-                        <Download size={15} /> Category-wise Stock CSV
-                      </button>
-                      <button className="soft" type="button" onClick={() => {
-                        if (role === 'superadmin' && !stockFilters.shopkeeperId) {
-                          return showToast('Select a shopkeeper in filters first to export shopkeeper-wise stock');
-                        }
-                        exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId });
-                      }}>
-                        <Download size={15} /> Shopkeeper-wise Stock CSV
-                      </button>
-                      <button className="soft" type="button" onClick={() => exportCsv('stock', { batchId: stockFilters.batch })}>
-                        <Download size={15} /> Price-Batch-wise Stock CSV
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="brand-pills-bar flex flex-wrap gap-1.5 mb-5 p-1 bg-slate-50/50 rounded-xl border border-slate-100/80">
-                    <button
-                      type="button"
-                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                        !stockFilters.brand
-                          ? 'bg-teal text-white shadow-sm'
-                          : 'bg-transparent text-slate-600 hover:text-teal hover:bg-teal/5'
-                      }`}
-                      onClick={() => setStockFilters({ ...stockFilters, brand: '' })}
-                    >
-                      All Brands
-                    </button>
-                    {data.reference.brands.map((brand) => {
-                      const isActive = stockFilters.brand === brand.name;
-                      return (
-                        <button
-                          key={brand.id}
-                          type="button"
-                          className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${
-                            isActive
-                              ? 'bg-teal text-white shadow-sm'
-                              : 'bg-transparent text-slate-600 hover:text-teal hover:bg-teal/5'
-                          }`}
-                          onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}
-                        >
-                          {brand.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="filter-grid">
-                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
-                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All categories" />
-                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
-                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
-                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
-                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
-                  </div>
-                </section>
                 {role === 'superadmin' && (
                   <section className="panel transfer-launch">
                     <div>
@@ -2430,7 +2385,14 @@ function App() {
                     <button className="primary" type="button" onClick={() => setTransferDrawerOpen(true)}><Send size={17} /> Transfer stock</button>
                   </section>
                 )}
-                {visibleStock.length ? (
+                <div className="stock-section-heading">
+                  <div>
+                    <span className="stock-eyebrow">Live inventory</span>
+                    <h2>Current stock overview</h2>
+                  </div>
+                  <button className="soft" type="button" onClick={() => setActive('stock-categories')}><LayoutGrid size={16} /> View categories</button>
+                </div>
+                {data.stock.length ? (
                   <motion.div 
                     variants={listVariants}
                     initial="hidden"
@@ -2438,7 +2400,7 @@ function App() {
                     viewport={{ once: true, margin: "-10px" }}
                     className="table panel"
                   >
-                    {visibleStock.map((item) => (
+                    {data.stock.map((item) => (
                       <motion.div variants={itemVariants} className="row" key={item.id}>
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
@@ -2464,8 +2426,150 @@ function App() {
                 ) : (
                   <Empty title="No stock records found" />
                 )}
-                <section className="panel">
-                  <h2>Purchase-price batches</h2>
+              </section>
+            </PageWrapper>
+          )}
+
+          {active === 'stock-categories' && (
+            <PageWrapper activeKey="stock-categories" key="stock-categories">
+              <section className="space stock-categories-page">
+                <section className="stock-categories-hero">
+                  <div>
+                    <span className="stock-eyebrow">Inventory library</span>
+                    <h2>Browse stock without the clutter</h2>
+                    <p>Choose a category, refine the stock list, or download exactly the CSV report you need.</p>
+                  </div>
+                  <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Back to stock actions</button>
+                </section>
+
+                <section className="stock-section-card category-browser">
+                  <div className="stock-section-heading">
+                    <div>
+                      <span className="stock-eyebrow">All categories</span>
+                      <h2>Choose a stock category</h2>
+                    </div>
+                    <span className="category-result-count">{visibleStock.length} matching products</span>
+                  </div>
+                  <div className="category-card-grid">
+                    {categoryStats.map((category) => (
+                      <button
+                        key={category.name || 'all-categories'}
+                        type="button"
+                        className={`category-card ${stockFilters.category === category.name ? 'active' : ''}`}
+                        onClick={() => setStockFilters({ ...stockFilters, category: category.name })}
+                      >
+                        <span className="category-icon"><Package size={20} /></span>
+                        <span className="category-card-copy">
+                          <b>{category.label}</b>
+                          <small>{category.products} products</small>
+                        </span>
+                        <span className="category-quantity"><b>{category.quantity}</b><small>pieces</small></span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="stock-section-card stock-filter-panel">
+                  <div className="stock-section-heading">
+                    <div>
+                      <span className="stock-eyebrow">Find inventory</span>
+                      <h2>Filter stock</h2>
+                    </div>
+                    <button
+                      className="soft"
+                      type="button"
+                      onClick={() => setStockFilters({ brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '' })}
+                    >
+                      Clear filters
+                    </button>
+                  </div>
+                  <div className="brand-pills-bar">
+                    <button type="button" className={!stockFilters.brand ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: '' })}>All brands</button>
+                    {data.reference.brands.map((brand) => (
+                      <button key={brand.id} type="button" className={stockFilters.brand === brand.name ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}>
+                        {brand.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="filter-grid">
+                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
+                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All categories" />
+                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
+                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
+                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
+                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
+                  </div>
+                </section>
+
+                <section className="stock-section-card export-tools">
+                  <div className="stock-section-heading">
+                    <div>
+                      <span className="stock-eyebrow">Reports</span>
+                      <h2>CSV export centre</h2>
+                    </div>
+                    <p>Exports follow your selected shop and filters.</p>
+                  </div>
+                  <div className="export-action-grid">
+                    <button type="button" className="export-action-card" onClick={() => exportCsv('products')}>
+                      <span><Download size={18} /></span><b>All products</b><small>Complete products and models list</small>
+                    </button>
+                    <button type="button" className="export-action-card" onClick={() => {
+                      if (!stockFilters.brand) return showToast('Select a brand in filters first to export brand-wise stock');
+                      exportCsv('stock', { brand: stockFilters.brand });
+                    }}>
+                      <span><Download size={18} /></span><b>Brand-wise stock</b><small>Export the selected brand</small>
+                    </button>
+                    <button type="button" className="export-action-card" onClick={() => {
+                      if (!stockFilters.category) return showToast('Select a category first to export category-wise stock');
+                      exportCsv('stock', { category: stockFilters.category });
+                    }}>
+                      <span><Download size={18} /></span><b>Category-wise stock</b><small>Export the selected category</small>
+                    </button>
+                    <button type="button" className="export-action-card" onClick={() => {
+                      if (role === 'superadmin' && !stockFilters.shopkeeperId) return showToast('Select a shopkeeper first to export shopkeeper-wise stock');
+                      exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId });
+                    }}>
+                      <span><Download size={18} /></span><b>Shopkeeper stock</b><small>Export assigned inventory</small>
+                    </button>
+                    <button type="button" className="export-action-card" onClick={() => exportCsv('stock', { batchId: stockFilters.batch })}>
+                      <span><Download size={18} /></span><b>Price-batch stock</b><small>Export purchase-price batches</small>
+                    </button>
+                  </div>
+                </section>
+
+                <section>
+                  <div className="stock-section-heading">
+                    <div>
+                      <span className="stock-eyebrow">Filtered inventory</span>
+                      <h2>Matching stock</h2>
+                    </div>
+                    <span className="category-result-count">{visibleStock.length} results</span>
+                  </div>
+                  {visibleStock.length ? (
+                    <motion.div variants={listVariants} initial="hidden" whileInView="visible" viewport={{ once: true, margin: '-10px' }} className="table panel stock-results-table">
+                      {visibleStock.map((item) => (
+                        <motion.div variants={itemVariants} className="row" key={item.id}>
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0"><Smartphone size={18} /></div>
+                            <span><b title={fullModelList(item)}>{productName(item)}</b><small>{item.brand}</small></span>
+                          </div>
+                          <span><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
+                          <span><small>Price</small><strong>{priceLabel(item.official_price || item.retail_price)}</strong></span>
+                          <span><small>Stock level</small><strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs · {item.batch_count} batches</strong></span>
+                        </motion.div>
+                      ))}
+                    </motion.div>
+                  ) : <Empty title="No stock matches these filters" />}
+                </section>
+
+                <section className="stock-section-card batch-browser">
+                  <div className="stock-section-heading">
+                    <div>
+                      <span className="stock-eyebrow">Purchase history</span>
+                      <h2>Purchase-price batches</h2>
+                    </div>
+                    <span className="category-result-count">{visibleBatches.length} batches</span>
+                  </div>
                   <div className="table batch-table">
                     {visibleBatches.length ? visibleBatches.map((batch) => (
                       <div className="row" key={batch.id}>
