@@ -100,6 +100,66 @@ const compactModelName = (value) => {
 const productName = (item) => compactModelName(item?.short_name || item?.product_short_name || item?.display_name || item?.name || item?.product_name || item?.model_name);
 const fullModelList = (item) => item?.full_model_list || item?.name || item?.product_name || item?.model_name || '';
 const priceLabel = (value) => Number(value) > 0 ? currency(value) : 'Price not set';
+const normalizedText = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+const sameText = (left, right) => normalizedText(left) === normalizedText(right);
+const joinUniqueText = (values = [], fallback = '') => {
+  const seen = new Set();
+  const unique = values.filter((value) => {
+    const key = normalizedText(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique.join(' · ') || fallback;
+};
+const uniqueNamedItems = (items = []) => {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = normalizedText(item?.name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+const cleanReferenceData = (reference = {}) => ({
+  categories: uniqueNamedItems(reference.categories),
+  colours: uniqueNamedItems(reference.colours),
+  brands: uniqueNamedItems(reference.brands),
+});
+const combineLowStockAlerts = (items = []) => {
+  const combined = new Map();
+  items.forEach((item) => {
+    const key = `${normalizedText(item.shop_name)}::${normalizedText(productName(item))}`;
+    const existing = combined.get(key);
+    if (!existing) {
+      combined.set(key, { ...item, quantity: Number(item.quantity || 0) });
+      return;
+    }
+    existing.quantity += Number(item.quantity || 0);
+    existing.low_stock_threshold = Math.max(Number(existing.low_stock_threshold || 0), Number(item.low_stock_threshold || 0));
+  });
+  return [...combined.values()].filter((item) => Number(item.quantity) <= Number(item.low_stock_threshold || 0));
+};
+const combineStockRows = (items = []) => {
+  const combined = new Map();
+  items.forEach((item) => {
+    const key = `${item.shop_id || ''}::${normalizedText(productName(item))}`;
+    const existing = combined.get(key);
+    if (!existing) {
+      combined.set(key, {
+        ...item,
+        quantity: Number(item.quantity || 0),
+        batch_count: Number(item.batch_count || 0),
+        product_ids: [String(item.product_id)],
+      });
+      return;
+    }
+    existing.quantity += Number(item.quantity || 0);
+    existing.batch_count += Number(item.batch_count || 0);
+    existing.product_ids.push(String(item.product_id));
+  });
+  return [...combined.values()];
+};
 const groupPendingPayments = (rows = []) => {
   if (rows.every((row) => Array.isArray(row.items))) return rows;
   const groups = new Map();
@@ -630,7 +690,14 @@ function App() {
         api('/reference-data'),
         role === 'customer' ? Promise.resolve(data.priceVisibility) : authedFetch('/settings/price-visibility'),
       ]);
-      setData((prev) => ({ ...prev, shops, products, reference, priceVisibility, catalog: role === 'customer' ? products : prev.catalog }));
+      setData((prev) => ({
+        ...prev,
+        shops,
+        products,
+        reference: cleanReferenceData(reference),
+        priceVisibility,
+        catalog: role === 'customer' ? products : prev.catalog,
+      }));
     } catch (error) {
       handleLoadError(error, 'Unable to load the workspace. Check whether the local servers are running.');
     } finally {
@@ -652,13 +719,18 @@ function App() {
         if (role === 'customer') set('catalog', await api('/catalog'));
         else set('products', await authedFetch('/products'));
       }
-      if ((tab === 'stock' || tab === 'stock-categories') && currentShop) {
-        const [stock, batches, shopkeepers] = await Promise.all([
-          authedFetch(`/stock?shopId=${currentShop}`),
-          authedFetch(`/inventory-batches?shopId=${currentShop}`),
+      if (tab === 'stock' || tab === 'stock-categories') {
+        const targetShopIds = currentShop
+          ? [currentShop]
+          : role === 'superadmin'
+            ? data.shops.map((shop) => shop.id)
+            : [];
+        const [stockGroups, batchGroups, shopkeepers] = await Promise.all([
+          Promise.all(targetShopIds.map((id) => authedFetch(`/stock?shopId=${id}`))),
+          Promise.all(targetShopIds.map((id) => authedFetch(`/inventory-batches?shopId=${id}`))),
           role === 'superadmin' ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
         ]);
-        setData((prev) => ({ ...prev, stock, batches, shopkeepers }));
+        setData((prev) => ({ ...prev, stock: stockGroups.flat(), batches: batchGroups.flat(), shopkeepers }));
       }
       if (tab === 'customers' && currentShop) {
         const [stock, batches, customers, sales] = await Promise.all([
@@ -793,7 +865,7 @@ function App() {
 
   useEffect(() => {
     if (session && authReady) loadTab(active, shopId);
-  }, [active, selectedShop, session?.token, authReady]);
+  }, [active, selectedShop, session?.token, authReady, data.shops.length]);
 
   const login = (nextSession) => {
     const normalizedSession = normalizeSession(nextSession);
@@ -900,7 +972,7 @@ function App() {
       setSaving(true);
       await authedFetch(`/reference-data/${type}`, { method: 'POST', body: JSON.stringify({ name: cleanName }) });
       const reference = await api('/reference-data');
-      setData((prev) => ({ ...prev, reference }));
+      setData((prev) => ({ ...prev, reference: cleanReferenceData(reference) }));
       setNewReference({ type: '', name: '' });
       showToast(`${cleanName} added`);
     } catch (error) {
@@ -1820,9 +1892,9 @@ function App() {
   });
 
   const visibleBatches = data.batches.filter((batch) => {
-    const matchesBrand = !stockFilters.brand || batch.brand === stockFilters.brand;
-    const matchesCategory = !stockFilters.category || batch.category === stockFilters.category;
-    const matchesColour = !stockFilters.colour || batch.colour === stockFilters.colour;
+    const matchesBrand = !stockFilters.brand || sameText(batch.brand, stockFilters.brand);
+    const matchesCategory = !stockFilters.category || sameText(batch.category, stockFilters.category);
+    const matchesColour = !stockFilters.colour || sameText(batch.colour, stockFilters.colour);
     const matchesStatus = !stockFilters.status
       || (stockFilters.status === 'in_stock' ? Number(batch.quantity_remaining) > 0 : Number(batch.quantity_remaining) === 0);
     const matchesBatch = !stockFilters.batch || String(batch.id) === String(stockFilters.batch);
@@ -1830,13 +1902,14 @@ function App() {
     return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch && matchesShopkeeper;
   });
 
+  const combinedStock = combineStockRows(data.stock);
   const hasBatchScopedStockFilter = Boolean(stockFilters.colour || stockFilters.batch || stockFilters.shopkeeperId);
-  const visibleStock = data.stock
-    .filter((item) => (!stockFilters.brand || item.brand === stockFilters.brand)
-      && (!stockFilters.category || item.category === stockFilters.category))
+  const visibleStock = combinedStock
+    .filter((item) => (!stockFilters.brand || sameText(item.brand, stockFilters.brand))
+      && (!stockFilters.category || sameText(item.category, stockFilters.category)))
     .map((item) => {
       if (!hasBatchScopedStockFilter) return item;
-      const matchingBatches = visibleBatches.filter((batch) => String(batch.product_id) === String(item.product_id));
+      const matchingBatches = visibleBatches.filter((batch) => item.product_ids.includes(String(batch.product_id)));
       return {
         ...item,
         quantity: matchingBatches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0),
@@ -1850,11 +1923,11 @@ function App() {
     {
       name: '',
       label: 'All categories',
-      products: data.stock.length,
-      quantity: data.stock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      products: combinedStock.length,
+      quantity: combinedStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
     },
     ...data.reference.categories.map((category) => {
-      const categoryStock = data.stock.filter((item) => item.category === category.name);
+      const categoryStock = combinedStock.filter((item) => sameText(item.category, category.name));
       return {
         name: category.name,
         label: category.name,
@@ -1863,6 +1936,7 @@ function App() {
       };
     }),
   ];
+  const lowStockAlerts = combineLowStockAlerts(data.dashboard?.lowStock);
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
   if (!session) return <Login onLogin={login} />;
@@ -2034,7 +2108,7 @@ function App() {
                       viewport={{ once: true, margin: "-10px" }}
                       className="alert-list"
                     >
-                      {data.dashboard.lowStock.length ? data.dashboard.lowStock.map((item) => (
+                      {lowStockAlerts.length ? lowStockAlerts.map((item) => (
                         <motion.div 
                           variants={itemVariants} 
                           className="alert-item" 
@@ -2047,7 +2121,7 @@ function App() {
                             </div>
                             <div className="alert-item-details">
                               <b className="clamp-title" title={item.product_name}>{productName(item)}</b>
-                              <small>{item.shop_name} · {item.brand || 'No Brand'}</small>
+                              <small>{joinUniqueText([item.shop_name, item.brand], 'No brand')}</small>
                               <button className="soft text-[10px] !min-h-[22px] !py-0.5 !px-2 mt-1 self-start font-bold" type="button" onClick={() => {
                                 const prod = data.products.find(p => Number(p.id) === Number(item.product_id));
                                 setSelectedProductDetails(prod || { ...item, id: item.product_id, name: item.product_name });
@@ -2081,10 +2155,10 @@ function App() {
             <PageWrapper activeKey="shops" key="shops">
               <section className="space">
                 <FormPanel title="Add branch" action="Add shop" onSubmit={() => post('/shops', 'shop', 'Shop created')}>
-                  <Input label="Shop name" value={forms.shop.name} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, name: v } })} />
-                  <Input label="Area" value={forms.shop.area} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, area: v } })} />
-                  <Input label="Address" value={forms.shop.address} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, address: v } })} />
-                  <Input label="Phone" value={forms.shop.phone} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, phone: v } })} />
+                  <Input label="Shop name" className="md:col-span-2" value={forms.shop.name} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, name: v } })} />
+                  <Input label="Area" className="md:col-span-2" value={forms.shop.area} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, area: v } })} />
+                  <Input label="Address" className="md:col-span-2" value={forms.shop.address} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, address: v } })} />
+                  <Input label="Phone" className="md:col-span-2" value={forms.shop.phone} onChange={(v) => setForms({ ...forms, shop: { ...forms.shop, phone: v } })} />
                 </FormPanel>
                 <CardGrid 
                   items={data.shops} 
@@ -2120,11 +2194,11 @@ function App() {
             <PageWrapper activeKey="shopkeepers" key="shopkeepers">
               <section className="space">
                 <FormPanel title="Create shopkeeper login" action="Create login" onSubmit={submitShopkeeper}>
-                  <Input label="Name" value={forms.shopkeeper.name} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, name: v } })} />
-                  <Input label="Mobile" value={forms.shopkeeper.contact} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, contact: v } })} />
-                  <Input label="Username" value={forms.shopkeeper.username} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, username: v } })} />
-                  <Input label="Password" value={forms.shopkeeper.password} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, password: v } })} />
-                  <Select label="Shop" value={forms.shopkeeper.shop_id} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, shop_id: v } })} options={[...data.shops.map((s) => [s.id, s.name]), ['new_shop', '+ Add New Shop']]} />
+                  <Input label="Name" className="md:col-span-2" value={forms.shopkeeper.name} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, name: v } })} />
+                  <Input label="Mobile" className="md:col-span-2" value={forms.shopkeeper.contact} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, contact: v } })} />
+                  <Input label="Username" className="md:col-span-2" value={forms.shopkeeper.username} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, username: v } })} />
+                  <Input label="Password" className="md:col-span-2" value={forms.shopkeeper.password} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, password: v } })} />
+                  <Select label="Shop" className="md:col-span-4" value={forms.shopkeeper.shop_id} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, shop_id: v } })} options={[...data.shops.map((s) => [s.id, s.name]), ['new_shop', '+ Add New Shop']]} />
                   {forms.shopkeeper.shop_id === 'new_shop' && (
                     <div className="panel form-panel sub-form" style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
                       <h3 style={{ margin: 0, fontSize: '15px', color: 'var(--teal-dark)' }}>New Shop Details</h3>
@@ -2183,30 +2257,32 @@ function App() {
               <section className="space">
                 {role === 'superadmin' && (
                   <FormPanel title={editingProductId ? 'Edit product and prices' : 'Add product and prices'} action={saving ? 'Saving...' : editingProductId ? 'Update product' : 'Add product'} onSubmit={submitProduct} disabled={saving}>
-                    <Input label="Short display name" value={forms.product.short_name} onChange={(v) => setForms({ ...forms, product: { ...forms.product, short_name: v } })} />
-                    <Input label="Full compatible models" value={forms.product.full_model_list} onChange={(v) => setForms({ ...forms, product: { ...forms.product, full_model_list: v } })} />
-                    <Input label="Brand" value={forms.product.brand} onChange={(v) => setForms({ ...forms, product: { ...forms.product, brand: v } })} />
+                    <Input label="Short display name" className="md:col-span-2" value={forms.product.short_name} onChange={(v) => setForms({ ...forms, product: { ...forms.product, short_name: v } })} />
+                    <Input label="Full compatible models" className="md:col-span-2" value={forms.product.full_model_list} onChange={(v) => setForms({ ...forms, product: { ...forms.product, full_model_list: v } })} />
+                    <Input label="Brand" className="md:col-span-1" value={forms.product.brand} onChange={(v) => setForms({ ...forms, product: { ...forms.product, brand: v } })} />
                     <Select
                       label="Product Category"
+                      className="md:col-span-1"
                       value={forms.product.category}
                       onChange={(v) => v === '__new__' ? setNewReference({ type: 'categories', name: '' }) : setForms({ ...forms, product: { ...forms.product, category: v } })}
                       options={[...data.reference.categories.map((item) => [item.name, item.name]), ['__new__', '+ Add New Category']]}
                     />
                     {newReference.type === 'categories' && (
-                      <div className="inline-reference-control">
+                      <div className="inline-reference-control md:col-span-2">
                         <Input label="New category" value={newReference.name} onChange={(name) => setNewReference({ type: 'categories', name })} />
                         <button className="soft" type="button" onClick={() => addReferenceOption('categories', newReference.name)}>Add category</button>
                       </div>
                     )}
-                    <Input label="Official price" type="number" value={forms.product.official_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, official_price: v } })} />
-                    <Input label="Purchase price" type="number" value={forms.product.purchase_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, purchase_price: v } })} />
-                    <Input label="Sale price" type="number" value={forms.product.sale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, sale_price: v } })} />
-                    <Input label="Wholesale price" type="number" value={forms.product.wholesale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, wholesale_price: v } })} />
-                    <Input label="Retail price" type="number" value={forms.product.retail_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, retail_price: v } })} />
-                    {!editingProductId && <Input label="Opening stock" type="number" value={forms.product.opening_stock} onChange={(v) => setForms({ ...forms, product: { ...forms.product, opening_stock: v } })} />}
-                    <Input label="Description" value={forms.product.description} onChange={(v) => setForms({ ...forms, product: { ...forms.product, description: v } })} />
+                    <Input label="Official price" type="number" className="md:col-span-1" value={forms.product.official_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, official_price: v } })} />
+                    <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.product.purchase_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, purchase_price: v } })} />
+                    <Input label="Sale price" type="number" className="md:col-span-1" value={forms.product.sale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, sale_price: v } })} />
+                    <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.product.wholesale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, wholesale_price: v } })} />
+                    <Input label="Retail price" type="number" className="md:col-span-1" value={forms.product.retail_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, retail_price: v } })} />
+                    {!editingProductId && <Input label="Opening stock" type="number" className="md:col-span-1" value={forms.product.opening_stock} onChange={(v) => setForms({ ...forms, product: { ...forms.product, opening_stock: v } })} />}
+                    <Input label="Description" className="md:col-span-4" value={forms.product.description} onChange={(v) => setForms({ ...forms, product: { ...forms.product, description: v } })} />
                     <Select
                       label="Add Colour"
+                      className="md:col-span-1"
                       value=""
                       onChange={(v) => {
                         if (v === '__new__') return setNewReference({ type: 'colours', name: '' });
@@ -2215,9 +2291,9 @@ function App() {
                       }}
                       options={[...data.reference.colours.map((item) => [item.name, item.name]), ['__new__', '+ Add New Colour']]}
                     />
-                    <Input label="Selected colours" value={forms.product.colours} onChange={(v) => setForms({ ...forms, product: { ...forms.product, colours: v } })} />
+                    <Input label="Selected colours" className="md:col-span-3" value={forms.product.colours} onChange={(v) => setForms({ ...forms, product: { ...forms.product, colours: v } })} />
                     {newReference.type === 'colours' && (
-                      <div className="inline-reference-control">
+                      <div className="inline-reference-control md:col-span-2">
                         <Input label="New colour" value={newReference.name} onChange={(name) => setNewReference({ type: 'colours', name })} />
                         <button className="soft" type="button" onClick={() => addReferenceOption('colours', newReference.name)}>Add colour</button>
                       </div>
@@ -2361,20 +2437,20 @@ function App() {
                   </button>
                 </section>
                 <FormPanel title="Set available stock quantity" action="Save quantity" onSubmit={updateStock}>
-                  <Select label="Product" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
-                  <Input label="Available quantity" type="number" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
+                  <Select label="Product" className="md:col-span-3" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
+                  <Input label="Available quantity" type="number" className="md:col-span-1" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
                 </FormPanel>
                 <FormPanel title="Add purchase-price batch" action={saving ? 'Saving...' : 'Add batch'} onSubmit={addInventoryBatch} disabled={saving || needsSpecificShop}>
-                  <Select label="Product" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
-                  <Input label="Quantity received" type="number" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
-                  {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <Input label="Purchase price" type="number" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />}
-                  {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <Input label="Wholesale price" type="number" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />}
-                  {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <Input label="Official price" type="number" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />}
-                  <Input label="Retail price" type="number" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
-                  <Select label="Colour" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
-                  <Input label="Received date" type="date" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
-                  {role === 'superadmin' && <Select label="Assign to shopkeeper (optional)" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
-                  <Input label="Batch notes" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
+                  <Select label="Product" className="md:col-span-3" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
+                  <Input label="Quantity received" type="number" className="md:col-span-1" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
+                  {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />}
+                  {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />}
+                  {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <Input label="Official price" type="number" className="md:col-span-1" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />}
+                  <Input label="Retail price" type="number" className="md:col-span-1" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
+                  <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
+                  <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
+                  {role === 'superadmin' && <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
+                  <Input label="Batch notes" className="md:col-span-4" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
                 </FormPanel>
                 {role === 'superadmin' && (
                   <section className="panel transfer-launch">
@@ -2392,7 +2468,7 @@ function App() {
                   </div>
                   <button className="soft" type="button" onClick={() => setActive('stock-categories')}><LayoutGrid size={16} /> View categories</button>
                 </div>
-                {data.stock.length ? (
+                {combinedStock.length ? (
                   <motion.div 
                     variants={listVariants}
                     initial="hidden"
@@ -2400,13 +2476,13 @@ function App() {
                     viewport={{ once: true, margin: "-10px" }}
                     className="table panel"
                   >
-                    {data.stock.map((item) => (
+                    {combinedStock.map((item) => (
                       <motion.div variants={itemVariants} className="row" key={item.id}>
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
                             <Smartphone size={18} />
                           </div>
-                          <span><b title={fullModelList(item)}>{productName(item)}</b><small>{item.brand}</small></span>
+                          <span><b title={fullModelList(item)}>{productName(item)}</b><small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small></span>
                         </div>
                         <span>
                           <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Category</span>
@@ -2455,7 +2531,7 @@ function App() {
                       <button
                         key={category.name || 'all-categories'}
                         type="button"
-                        className={`category-card ${stockFilters.category === category.name ? 'active' : ''}`}
+                        className={`category-card ${sameText(stockFilters.category, category.name) ? 'active' : ''}`}
                         onClick={() => setStockFilters({ ...stockFilters, category: category.name })}
                       >
                         <span className="category-icon"><Package size={20} /></span>
@@ -2486,7 +2562,7 @@ function App() {
                   <div className="brand-pills-bar">
                     <button type="button" className={!stockFilters.brand ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: '' })}>All brands</button>
                     {data.reference.brands.map((brand) => (
-                      <button key={brand.id} type="button" className={stockFilters.brand === brand.name ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}>
+                      <button key={brand.id} type="button" className={sameText(stockFilters.brand, brand.name) ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}>
                         {brand.name}
                       </button>
                     ))}
@@ -2497,7 +2573,7 @@ function App() {
                     <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
                     <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
                     <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
-                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
+                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => !shopId || String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
                   </div>
                 </section>
 
@@ -2551,7 +2627,7 @@ function App() {
                         <motion.div variants={itemVariants} className="row" key={item.id}>
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0"><Smartphone size={18} /></div>
-                            <span><b title={fullModelList(item)}>{productName(item)}</b><small>{item.brand}</small></span>
+                            <span><b title={fullModelList(item)}>{productName(item)}</b><small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small></span>
                           </div>
                           <span><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
                           <span><small>Price</small><strong>{priceLabel(item.official_price || item.retail_price)}</strong></span>
@@ -2592,10 +2668,10 @@ function App() {
                   <div className="loading">Choose one shop from the top-right filter before adding customers or purchases.</div>
                 )}
                 <FormPanel title="Add customer" action="Add customer" onSubmit={() => post('/customers', 'customer', 'Customer added')} disabled={saving || needsSpecificShop}>
-                  <Input label="Name" value={forms.customer.name} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, name: v } })} />
-                  <Input label="Mobile" value={forms.customer.mobile} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, mobile: v } })} />
-                  <Input label="Address" value={forms.customer.address} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, address: v } })} />
-                  <Input label="Notes" value={forms.customer.notes} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, notes: v } })} />
+                  <Input label="Name" className="md:col-span-1" value={forms.customer.name} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, name: v } })} />
+                  <Input label="Mobile" className="md:col-span-1" value={forms.customer.mobile} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, mobile: v } })} />
+                  <Input label="Address" className="md:col-span-2" value={forms.customer.address} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, address: v } })} />
+                  <Input label="Notes" className="md:col-span-4" value={forms.customer.notes} onChange={(v) => setForms({ ...forms, customer: { ...forms.customer, notes: v } })} />
                 </FormPanel>
                 <FormPanel title="Record customer purchase" action={saving ? 'Saving...' : 'Add transaction'} onSubmit={() => submitSale('customers')} disabled={saving || needsSpecificShop}>
                   <div style={{ gridColumn: '1 / -1', display: 'grid', gap: '16px' }}>
@@ -2651,9 +2727,9 @@ function App() {
                     </div>
                   </div>
 
-                  <Input label="Total bill amount (Auto-calculated)" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
-                  <Input label="Paid now" type="number" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
-                  <Input label="Due date" type="date" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
+                  <Input label="Total bill amount (Auto-calculated)" type="number" className="md:col-span-2" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
+                  <Input label="Paid now" type="number" className="md:col-span-1" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
+                  <Input label="Due date" type="date" className="md:col-span-1" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
                 </FormPanel>
                 <CardGrid items={data.customers} render={(customer) => {
                   const customerSales = data.sales.filter((sale) => Number(sale.customer_id) === Number(customer.id)).slice(0, 3);
@@ -2738,9 +2814,9 @@ function App() {
                     </div>
                   </div>
 
-                  <Input label="Total bill amount (Auto-calculated)" type="number" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
-                  <Input label="Paid amount" type="number" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
-                  <Input label="Due date" type="date" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
+                  <Input label="Total bill amount (Auto-calculated)" type="number" className="md:col-span-2" value={forms.sale.total_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, total_amount: v } })} />
+                  <Input label="Paid amount" type="number" className="md:col-span-1" value={forms.sale.paid_amount} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, paid_amount: v } })} />
+                  <Input label="Due date" type="date" className="md:col-span-1" value={forms.sale.due_date} onChange={(v) => setForms({ ...forms, sale: { ...forms.sale, due_date: v } })} />
                 </FormPanel>
                 {data.sales.length ? (
                   <motion.div 
@@ -2774,10 +2850,10 @@ function App() {
               <section className="space">
                 {role === 'shopkeeper' && (
                   <FormPanel title="Request stock from owner" action={saving ? 'Sending...' : 'Send request'} onSubmit={submitRequest} disabled={saving}>
-                    <Select label="Known product" value={forms.request.product_id} onChange={(v) => setForms({ ...forms, request: { ...forms.request, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
-                    <Input label="New model name" value={forms.request.model_name} onChange={(v) => setForms({ ...forms, request: { ...forms.request, model_name: v } })} />
-                    <Input label="Quantity needed" type="number" value={forms.request.quantity} onChange={(v) => setForms({ ...forms, request: { ...forms.request, quantity: v } })} />
-                    <Input label="Message" value={forms.request.message} onChange={(v) => setForms({ ...forms, request: { ...forms.request, message: v } })} />
+                    <Select label="Known product" className="md:col-span-2" value={forms.request.product_id} onChange={(v) => setForms({ ...forms, request: { ...forms.request, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
+                    <Input label="New model name" className="md:col-span-2" value={forms.request.model_name} onChange={(v) => setForms({ ...forms, request: { ...forms.request, model_name: v } })} />
+                    <Input label="Quantity needed" type="number" className="md:col-span-1" value={forms.request.quantity} onChange={(v) => setForms({ ...forms, request: { ...forms.request, quantity: v } })} />
+                    <Input label="Message" className="md:col-span-3" value={forms.request.message} onChange={(v) => setForms({ ...forms, request: { ...forms.request, message: v } })} />
                   </FormPanel>
                 )}
                 <motion.div 
@@ -3452,13 +3528,13 @@ function FormPanel({ title, action, onSubmit, children, disabled = false }) {
   );
 }
 
-function Input({ label, value, onChange, type = 'text' }) {
-  return <label>{label}<input type={type} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
+function Input({ label, value, onChange, type = 'text', className = '' }) {
+  return <label className={className}>{label}<input type={type} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
-function Select({ label, value, onChange, options, placeholder = 'Select' }) {
+function Select({ label, value, onChange, options, placeholder = 'Select', className = '' }) {
   return (
-    <label>
+    <label className={className}>
       {label}
       <select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{placeholder}</option>

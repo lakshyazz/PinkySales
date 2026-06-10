@@ -34,7 +34,23 @@ const money = (value) => Number(value || 0);
 const productDisplayName = (row) => row.short_name || row.name;
 const normalizeColours = (value) => {
   const colours = Array.isArray(value) ? value : String(value || '').split(',');
-  return [...new Set(colours.map((colour) => String(colour).trim()).filter(Boolean))];
+  const unique = new Map();
+  colours.map((colour) => String(colour).trim()).filter(Boolean).forEach((colour) => {
+    const key = colour.toLocaleLowerCase();
+    if (!unique.has(key)) unique.set(key, colour);
+  });
+  return [...unique.values()];
+};
+const ensureReference = async (table, value) => {
+  const name = String(value || '').trim();
+  if (!name) return null;
+  const existing = await getRecord(`SELECT id, name FROM ${table} WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id LIMIT 1`, [name]);
+  if (existing) {
+    await runQuery(`UPDATE ${table} SET is_active = TRUE WHERE id = ?`, [existing.id]);
+    return existing;
+  }
+  const result = await runQuery(`INSERT INTO ${table} (name) VALUES (?)`, [name]);
+  return { id: result.id, name };
 };
 const settingEnabled = (settings, key, fallback = false) => {
   const value = settings[key];
@@ -332,9 +348,9 @@ app.post('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, r
 
 app.get('/api/reference-data', async (_req, res) => {
   const [categories, colours, brands] = await Promise.all([
-    allRecords('SELECT id, name FROM categories WHERE is_active = TRUE ORDER BY name'),
-    allRecords('SELECT id, name FROM colours WHERE is_active = TRUE ORDER BY name'),
-    allRecords('SELECT id, name FROM brands WHERE is_active = TRUE ORDER BY name'),
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM categories WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM colours WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM brands WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
   ]);
   res.json({ categories, colours, brands });
 });
@@ -344,9 +360,9 @@ app.post('/api/reference-data/:type', authenticateToken, requireSuperAdmin, asyn
   const table = tables[req.params.type];
   const name = String(req.body.name || '').trim();
   if (!table || !name) return res.status(400).json({ error: 'Choose a valid reference type and enter a name.' });
-  const result = await runQuery(`INSERT INTO ${table} (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET is_active = TRUE RETURNING id`, [name]);
-  await audit(req, `Added ${req.params.type}`, req.params.type, result.id, name);
-  res.status(201).json({ id: result.id, name });
+  const reference = await ensureReference(table, name);
+  await audit(req, `Added ${req.params.type}`, req.params.type, reference.id, reference.name);
+  res.status(201).json(reference);
 });
 
 app.get('/api/settings/price-visibility', authenticateToken, requireShopStaff, async (_req, res) => {
@@ -466,10 +482,10 @@ app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res)
   for (const shop of shops) {
     await runQuery('INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0) ON CONFLICT(shop_id, product_id) DO NOTHING', [shop.id, result.id]);
   }
-  await runQuery('INSERT INTO categories (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [category]);
-  await runQuery('INSERT INTO brands (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [brand]);
+  await ensureReference('categories', category);
+  await ensureReference('brands', brand);
   for (const colour of normalizeColours(colours)) {
-    await runQuery('INSERT INTO colours (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [colour]);
+    await ensureReference('colours', colour);
   }
   await audit(req, 'Created product and official price', 'product', result.id, `${displayName} at ${official_price}`);
   res.status(201).json({ id: result.id, name: compatibilityModels, short_name: displayName, full_model_list: compatibilityModels });
@@ -512,10 +528,10 @@ app.put('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, r
       purchasePriceNum, salePriceNum, wholesalePriceNum, retailPriceNum, description || '', normalizeColours(colours), is_active, req.params.id,
     ]
   );
-  await runQuery('INSERT INTO categories (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [category]);
-  await runQuery('INSERT INTO brands (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [brand]);
+  await ensureReference('categories', category);
+  await ensureReference('brands', brand);
   for (const colour of normalizeColours(colours)) {
-    await runQuery('INSERT INTO colours (name) VALUES (?) ON CONFLICT(name) DO NOTHING', [colour]);
+    await ensureReference('colours', colour);
   }
   await audit(req, 'Updated official price', 'product', req.params.id, `${oldProduct?.official_price || 0} -> ${official_price}`);
   res.json({ success: true });
