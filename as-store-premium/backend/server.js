@@ -358,7 +358,7 @@ app.put('/api/settings/price-visibility', authenticateToken, requireSuperAdmin, 
   for (const key of allowed) {
     if (req.body[key] === undefined) continue;
     await runQuery(
-      'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP',
+      'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP RETURNING key',
       [key, String(Boolean(req.body[key]))]
     );
   }
