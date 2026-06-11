@@ -11,13 +11,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'as-store-multishop-local-secret';
 const VALID_ROLES = new Set(['superadmin', 'shopkeeper', 'admin', 'customer', 'user']);
 const isShopStaffRole = (role) => role === 'shopkeeper' || role === 'admin';
 const isCustomerRole = (role) => role === 'customer' || role === 'user';
+const allowedCorsOrigins = String(process.env.CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
 
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   console.warn('[Server] WARNING: JWT_SECRET is not set in production. Using fallback secret.');
 }
 
-app.use(cors());
-app.use(express.json());
+app.use(cors(allowedCorsOrigins.length ? { origin: allowedCorsOrigins } : {}));
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+app.use(express.json({ limit: '256kb' }));
 
 await initDatabase().catch((err) => {
   console.error('[Server] Failed to initialize database:', err);
@@ -80,6 +88,9 @@ const productColumnsForRole = async (role) => {
 const batchAccessSql = (user, alias = 'ib') => isShopStaffRole(user.role)
   ? ` AND (${alias}.assigned_user_id IS NULL OR ${alias}.assigned_user_id = ${Number(user.id)})`
   : '';
+const ownedBatchAccessSql = (user, alias = 'ib') => isShopStaffRole(user.role)
+  ? ` AND ${alias}.assigned_user_id = ${Number(user.id)}`
+  : '';
 const syncStockFromBatches = async (tx, shopId, productId) => {
   const row = await tx.getRecord(
     'SELECT COALESCE(SUM(quantity_remaining), 0) AS quantity FROM inventory_batches WHERE shop_id = ? AND product_id = ?',
@@ -110,10 +121,25 @@ const authenticateToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Login required.' });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, async (err, tokenUser) => {
     if (err) return res.status(403).json({ error: 'Session expired. Please login again.' });
-    req.user = user;
-    next();
+    try {
+      const user = await getRecord(
+        'SELECT id, username, role, name, shop_id FROM users WHERE id = ?',
+        [tokenUser.id]
+      );
+      if (!user || !VALID_ROLES.has(user.role)) {
+        return res.status(403).json({ error: 'This account no longer has access. Please login again.' });
+      }
+      if (isShopStaffRole(user.role) && !user.shop_id) {
+        return res.status(403).json({ error: 'This account is not assigned to a shop. Contact the Super Admin.' });
+      }
+      req.user = { ...tokenUser, ...user };
+      next();
+    } catch (error) {
+      console.error('[Auth] Session validation failed:', error);
+      res.status(503).json({ error: 'Unable to validate this session right now.' });
+    }
   });
 };
 
@@ -149,8 +175,9 @@ const requireScopedShopId = (req, requestedShopId) => {
 
 app.post('/api/auth/login', async (req, res) => {
   const username = String(req.body.username || '').trim();
-  const { password } = req.body;
+  const password = String(req.body.password || '');
   if (!username || !password) return res.status(400).json({ error: 'Enter username and password.' });
+  if (username.length > 80 || password.length > 200) return res.status(400).json({ error: 'Username or password is too long.' });
 
   const user = await getRecord(`
     SELECT u.id, u.username, u.password, u.role, u.name, u.shop_id, s.name AS shop_name, s.area AS shop_area
@@ -335,15 +362,71 @@ app.get('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, re
 });
 
 app.post('/api/shopkeepers', authenticateToken, requireSuperAdmin, async (req, res) => {
-  const { username, password, name, contact, shop_id } = req.body;
-  if (!username || !password || !name || !shop_id) return res.status(400).json({ error: 'Username, password, name and shop are required.' });
-  const hash = await bcrypt.hash(password, 10);
-  const result = await runQuery(
-    "INSERT INTO users (username, password, role, name, contact, shop_id) VALUES (?, ?, 'shopkeeper', ?, ?, ?)",
-    [username, hash, name, contact || '', shop_id]
-  );
-  await audit(req, 'Created shopkeeper', 'user', result.id, name);
-  res.status(201).json({ id: result.id, username, name, contact, shop_id });
+  try {
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
+    const name = String(req.body.name || '').trim();
+    const contact = String(req.body.contact || '').trim();
+    const shopId = Number(req.body.shop_id);
+    if (!username || !password || !name || !Number.isInteger(shopId) || shopId <= 0) {
+      return res.status(400).json({ error: 'Username, password, name and shop are required.' });
+    }
+    if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) {
+      return res.status(400).json({ error: 'Username must be 3-40 characters and use only letters, numbers, dots, dashes, or underscores.' });
+    }
+    if (password.length < 8 || password.length > 200) {
+      return res.status(400).json({ error: 'Password must contain between 8 and 200 characters.' });
+    }
+    if (name.length > 80 || contact.length > 30) {
+      return res.status(400).json({ error: 'Name or mobile number is too long.' });
+    }
+    const [shop, existingUser] = await Promise.all([
+      getRecord('SELECT id FROM shops WHERE id = ?', [shopId]),
+      getRecord('SELECT id FROM users WHERE LOWER(username) = LOWER(?)', [username]),
+    ]);
+    if (!shop) return res.status(400).json({ error: 'Choose a valid shop.' });
+    if (existingUser) return res.status(409).json({ error: 'That username is already in use.' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const result = await runQuery(
+      "INSERT INTO users (username, password, role, name, contact, shop_id) VALUES (?, ?, 'shopkeeper', ?, ?, ?)",
+      [username, hash, name, contact, shopId]
+    );
+    await audit(req, 'Created shopkeeper', 'user', result.id, name);
+    res.status(201).json({ id: result.id, username, name, contact, shop_id: shopId });
+  } catch (error) {
+    console.error('[Shopkeepers] Create failed:', error);
+    res.status(500).json({ error: 'Unable to create this shopkeeper right now.' });
+  }
+});
+
+app.delete('/api/shopkeepers/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const shopkeeperId = Number(req.params.id);
+    if (!Number.isInteger(shopkeeperId) || shopkeeperId <= 0) {
+      return res.status(400).json({ error: 'Choose a valid shopkeeper.' });
+    }
+    const shopkeeper = await getRecord(
+      "SELECT id, name, username FROM users WHERE id = ? AND role IN ('shopkeeper', 'admin')",
+      [shopkeeperId]
+    );
+    if (!shopkeeper) return res.status(404).json({ error: 'Shopkeeper not found.' });
+
+    await runTransaction(async (tx) => {
+      await tx.runQuery('UPDATE inventory_batches SET assigned_user_id = NULL WHERE assigned_user_id = ?', [shopkeeperId]);
+      await tx.runQuery('UPDATE inventory_batches SET created_by = NULL WHERE created_by = ?', [shopkeeperId]);
+      await tx.runQuery('UPDATE sales SET created_by = NULL WHERE created_by = ?', [shopkeeperId]);
+      await tx.runQuery('UPDATE customers SET created_by = NULL WHERE created_by = ?', [shopkeeperId]);
+      await tx.runQuery('UPDATE stock_requests SET created_by = NULL WHERE created_by = ?', [shopkeeperId]);
+      await tx.runQuery('UPDATE audit_logs SET actor_id = NULL WHERE actor_id = ?', [shopkeeperId]);
+      await tx.runQuery("DELETE FROM users WHERE id = ? AND role IN ('shopkeeper', 'admin')", [shopkeeperId]);
+    });
+    await audit(req, 'Deleted shopkeeper login', 'user', shopkeeperId, `${shopkeeper.name} (@${shopkeeper.username})`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Shopkeepers] Delete failed:', error);
+    res.status(500).json({ error: 'Unable to delete this shopkeeper right now.' });
+  }
 });
 
 app.get('/api/reference-data', async (_req, res) => {
@@ -537,6 +620,38 @@ app.put('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, r
   res.json({ success: true });
 });
 
+app.delete('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const product = await getRecord('SELECT id, name, short_name FROM products WHERE id = ?', [req.params.id]);
+    if (!product) return res.status(404).json({ error: 'Product not found.' });
+
+    const history = await getRecord(
+      `SELECT
+        (SELECT COUNT(*) FROM sales WHERE product_id = ?) AS sale_count,
+        (SELECT COUNT(*) FROM stock_requests WHERE product_id = ?) AS request_count,
+        (SELECT COUNT(*) FROM stock_transfers WHERE product_id = ?) AS transfer_count`,
+      [req.params.id, req.params.id, req.params.id]
+    );
+    const historyCount = Number(history?.sale_count || 0) + Number(history?.request_count || 0) + Number(history?.transfer_count || 0);
+    if (historyCount > 0) {
+      return res.status(409).json({
+        error: 'This product has sales, request, or transfer history and cannot be deleted.',
+      });
+    }
+
+    await runTransaction(async (tx) => {
+      await tx.runQuery('DELETE FROM inventory_batches WHERE product_id = ?', [req.params.id]);
+      await tx.runQuery('DELETE FROM stock WHERE product_id = ?', [req.params.id]);
+      await tx.runQuery('DELETE FROM products WHERE id = ?', [req.params.id]);
+    });
+    await audit(req, 'Deleted product and inventory', 'product', req.params.id, product.short_name || product.name);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Products] Delete failed:', error);
+    res.status(500).json({ error: 'Unable to delete this product right now.' });
+  }
+});
+
 app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
   try {
     const shopId = requireScopedShopId(req, scopeShopId(req));
@@ -573,7 +688,9 @@ app.put('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
     if (!Number.isInteger(stockQuantity) || stockQuantity < 0) return res.status(400).json({ error: 'Quantity must be 0 or more.' });
     const effectiveAssignedUserId = isShopStaffRole(req.user.role) ? req.user.id : assigned_user_id || null;
     await runTransaction(async (tx) => {
-      const accessSql = batchAccessSql(req.user);
+      // Shopkeepers set only their personal inventory balance. Shared owner
+      // stock remains available for sales, but cannot be reduced from here.
+      const accessSql = ownedBatchAccessSql(req.user);
       const current = await tx.getRecord(
         `SELECT COALESCE(SUM(quantity_remaining), 0) AS quantity FROM inventory_batches ib WHERE shop_id = ? AND product_id = ? ${accessSql}`,
         [shopId, product_id]

@@ -2,14 +2,17 @@ import React, { useDeferredValue, useEffect, useState, useRef } from 'react';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import {
   AlertTriangle,
+  ArrowLeft,
   BarChart3,
   Building2,
+  ChevronRight,
   Contact,
   CreditCard,
   Download,
   Eye,
   EyeOff,
   FileText,
+  ListFilter,
   IndianRupee,
   LayoutGrid,
   LogOut,
@@ -25,6 +28,7 @@ import {
   ShoppingBag,
   Store,
   Sun,
+  Trash2,
   UserCog,
   Users,
   X,
@@ -61,6 +65,11 @@ const api = async (path, options = {}, token = '') => {
 const isSessionError = (error) => (
   error?.status === 401
   || (error?.status === 403 && /session expired|invalid token|login again/i.test(error.message))
+);
+const inferToastTone = (message) => (
+  /unable|failed|error|wrong|invalid|required|cannot|choose|select|enter|no matching|not found|already in use/i.test(String(message || ''))
+    ? 'error'
+    : 'success'
 );
 
 const normalizeSession = (session) => {
@@ -160,6 +169,11 @@ const combineStockRows = (items = []) => {
   });
   return [...combined.values()];
 };
+const sumBatchQuantity = (batches = []) => batches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0);
+const batchBelongsToStockItem = (batch, item) => (
+  item.product_ids.includes(String(batch.product_id))
+  && (!item.shop_id || String(batch.shop_id) === String(item.shop_id))
+);
 const groupPendingPayments = (rows = []) => {
   if (rows.every((row) => Array.isArray(row.items))) return rows;
   const groups = new Map();
@@ -449,6 +463,49 @@ function SkeletonPage({ type = 'list' }) {
   );
 }
 
+function ConfirmationDialog({ dialog, saving, onCancel, onConfirm }) {
+  return (
+    <AnimatePresence>
+      {dialog && (
+        <motion.div
+          className="confirmation-layer"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !saving) onCancel();
+          }}
+        >
+          <motion.section
+            className="confirmation-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="confirmation-title"
+            aria-describedby="confirmation-message"
+            initial={{ opacity: 0, y: 18, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.97 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+          >
+            <div className="confirmation-icon"><AlertTriangle size={22} /></div>
+            <div className="confirmation-copy">
+              <span>Owner confirmation</span>
+              <h2 id="confirmation-title">{dialog.title}</h2>
+              <p id="confirmation-message">{dialog.message}</p>
+            </div>
+            <div className="confirmation-actions">
+              <button className="soft" type="button" disabled={saving} onClick={onCancel}>Cancel</button>
+              <button className="danger-action" type="button" disabled={saving} onClick={onConfirm}>
+                <Trash2 size={16} /> {saving ? 'Working...' : dialog.confirmLabel || 'Confirm'}
+              </button>
+            </div>
+          </motion.section>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 function Login({ onLogin }) {
   const [form, setForm] = useState({ username: '', password: '' });
   const [error, setError] = useState('');
@@ -552,11 +609,13 @@ function App() {
   const [authReady, setAuthReady] = useState(() => !session);
   const [active, setActive] = useState(session?.role === 'customer' ? 'catalog' : 'dashboard');
   const [open, setOpen] = useState(false);
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [selectedProductDetails, setSelectedProductDetails] = useState(null);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const toastTimerRef = useRef(null);
   const [data, setData] = useState({
     dashboard: null,
     shops: [],
@@ -580,7 +639,11 @@ function App() {
   const [selectedShop, setSelectedShop] = useState('');
   const [forms, setForms] = useState(initialForms);
   const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', category: '', colour: '', shopId: '', min: '', max: '' });
-  const [stockFilters, setStockFilters] = useState({ brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '' });
+  const [stockFilters, setStockFilters] = useState({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+  const [shopkeeperStockSearch, setShopkeeperStockSearch] = useState('');
+  const [categorySearch, setCategorySearch] = useState('');
+  const [stockCategoryPage, setStockCategoryPage] = useState(null);
+  const [categoryFiltersOpen, setCategoryFiltersOpen] = useState(false);
   const [newReference, setNewReference] = useState({ type: '', name: '' });
   const [modelSearch, setModelSearch] = useState('');
   const [transferDrawerOpen, setTransferDrawerOpen] = useState(false);
@@ -644,16 +707,42 @@ function App() {
   const needsSpecificShop = role === 'superadmin' && !shopId;
 
   const authedFetch = (path, options = {}) => api(path, options, token);
-  const showToast = (message) => {
-    setToast(message);
-    setTimeout(() => setToast(''), 2600);
+  const showToast = (message, tone = inferToastTone(message)) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, tone });
+    toastTimerRef.current = setTimeout(() => setToast(null), 3200);
   };
+  const requestConfirmation = (dialog) => setConfirmDialog(dialog);
+  const runConfirmedAction = async () => {
+    const action = confirmDialog?.onConfirm;
+    if (!action) return;
+    try {
+      await action();
+    } finally {
+      setConfirmDialog(null);
+    }
+  };
+
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
   const requireShopSelection = (message = 'Select a specific shop first') => {
     if (role === 'superadmin' && !shopId) {
       showToast(message);
       return false;
     }
     return true;
+  };
+  const openStockCategoriesHub = () => {
+    setStockCategoryPage(null);
+    setCategoryFiltersOpen(false);
+    setStockFilters({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+    setActive('stock-categories');
+  };
+  const openStockCategoryPage = (categoryName = '') => {
+    setCategoryFiltersOpen(false);
+    setStockFilters({ search: '', brand: '', category: categoryName, colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+    setStockCategoryPage(categoryName || '__all__');
   };
   const handleLoadError = (error, fallback = 'Unable to load data right now') => {
     if (isSessionError(error)) {
@@ -665,18 +754,24 @@ function App() {
     showToast(message);
   };
 
-  const clearAuditLogs = async () => {
-    if (!window.confirm('Are you sure you want to permanently clear all audit history?')) return;
-    try {
-      setSaving(true);
-      await authedFetch('/reports/audit', { method: 'DELETE' });
-      showToast('Audit history cleared');
-      await loadTab(active, shopId);
-    } catch (error) {
-      showToast(error.message || 'Failed to clear audit history');
-    } finally {
-      setSaving(false);
-    }
+  const clearAuditLogs = () => {
+    requestConfirmation({
+      title: 'Clear all audit history?',
+      message: 'This permanently removes the owner audit log. Business records remain unchanged, but this action cannot be undone.',
+      confirmLabel: 'Clear history',
+      onConfirm: async () => {
+        try {
+          setSaving(true);
+          await authedFetch('/reports/audit', { method: 'DELETE' });
+          showToast('Audit history cleared');
+          await loadTab(active, shopId);
+        } catch (error) {
+          showToast(error.message || 'Failed to clear audit history');
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   const loadCore = async () => {
@@ -811,23 +906,27 @@ function App() {
     }
   };
 
-  const handleDeleteShop = async () => {
-    if (!window.confirm('Are you sure you want to delete this shop? This will delete all associated stock, transactions, and customers.')) {
-      return;
-    }
-    try {
-      setSaving(true);
-      await authedFetch(`/shops/${detailedShopId}`, {
-        method: 'DELETE',
-      });
-      showToast('Shop deleted successfully');
-      setDetailedShopId(null);
-      await loadCore();
-    } catch (err) {
-      showToast(err.message || 'Failed to delete shop');
-    } finally {
-      setSaving(false);
-    }
+  const handleDeleteShop = () => {
+    requestConfirmation({
+      title: 'Delete this shop?',
+      message: 'This removes the shop and all associated stock, transactions, customers, and shopkeeper logins. This action cannot be undone.',
+      confirmLabel: 'Delete shop',
+      onConfirm: async () => {
+        try {
+          setSaving(true);
+          await authedFetch(`/shops/${detailedShopId}`, {
+            method: 'DELETE',
+          });
+          showToast('Shop deleted successfully');
+          setDetailedShopId(null);
+          await loadCore();
+        } catch (err) {
+          showToast(err.message || 'Failed to delete shop');
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   const getStockMetrics = () => {
@@ -884,6 +983,20 @@ function App() {
   };
 
   const submitShopkeeper = async () => {
+    const username = forms.shopkeeper.username.trim();
+    const name = forms.shopkeeper.name.trim();
+    if (!name || !username || !forms.shopkeeper.password) {
+      showToast('Enter the shopkeeper name, username, and password');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) {
+      showToast('Username must be 3-40 characters using letters, numbers, dots, dashes, or underscores');
+      return;
+    }
+    if (forms.shopkeeper.password.length < 8) {
+      showToast('Password must contain at least 8 characters');
+      return;
+    }
     let currentShopId = forms.shopkeeper.shop_id;
     if (!currentShopId) {
       showToast('Please select a shop');
@@ -903,16 +1016,38 @@ function App() {
       }
       await authedFetch('/shopkeepers', { 
         method: 'POST', 
-        body: JSON.stringify({ ...forms.shopkeeper, shop_id: currentShopId }) 
+        body: JSON.stringify({ ...forms.shopkeeper, username, name, shop_id: currentShopId })
       });
       setForms((prev) => ({ ...prev, shopkeeper: initialForms.shopkeeper }));
-      showToast('Shopkeeper created successfully!');
+      showToast('Shopkeeper login created successfully');
       await loadCore();
     } catch (error) {
       showToast(error.message || 'Unable to save right now');
     } finally {
       setSaving(false);
     }
+  };
+
+  const deleteShopkeeper = (shopkeeper) => {
+    if (role !== 'superadmin') return;
+    requestConfirmation({
+      title: `Remove ${shopkeeper.name}'s login?`,
+      message: `This immediately blocks @${shopkeeper.username} from signing in. Their historical sales, customers, requests, and audit records will stay safe, and assigned inventory will return to main warehouse ownership.`,
+      confirmLabel: 'Delete login',
+      onConfirm: async () => {
+        try {
+          setSaving(true);
+          await authedFetch(`/shopkeepers/${shopkeeper.id}`, { method: 'DELETE' });
+          showToast(`${shopkeeper.name}'s login was deleted`);
+          await loadCore();
+          await loadTab('shopkeepers');
+        } catch (error) {
+          showToast(error.message || 'Unable to delete this shopkeeper');
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   const post = async (path, formKey, success) => {
@@ -938,7 +1073,7 @@ function App() {
       setSaving(true);
       await authedFetch('/stock', { method: 'PUT', body: JSON.stringify({ ...forms.stock, shop_id: shopId }) });
       setForms((prev) => ({ ...prev, stock: initialForms.stock }));
-      showToast('Stock updated');
+      showToast(role === 'shopkeeper' ? 'Your stock quantity was updated' : 'Stock updated');
       await loadTab('stock', shopId);
     } catch (error) {
       showToast(error.message || 'Unable to update stock right now');
@@ -979,19 +1114,6 @@ function App() {
       showToast(error.message || `Unable to add ${type.replace(/s$/, '')}`);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const updatePriceVisibility = async (key, checked) => {
-    try {
-      const priceVisibility = await authedFetch('/settings/price-visibility', {
-        method: 'PUT',
-        body: JSON.stringify({ [key]: checked }),
-      });
-      setData((prev) => ({ ...prev, priceVisibility }));
-      showToast('Shopkeeper price visibility updated');
-    } catch (error) {
-      showToast(error.message || 'Unable to update price visibility');
     }
   };
 
@@ -1405,6 +1527,33 @@ function App() {
       },
     }));
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const deleteProduct = (product) => {
+    if (role !== 'superadmin') return;
+    const name = productName(product);
+    requestConfirmation({
+      title: `Delete ${name}?`,
+      message: 'This removes the product and all of its inventory. Products with sales, request, or transfer history are protected and cannot be deleted.',
+      confirmLabel: 'Delete product',
+      onConfirm: async () => {
+        try {
+          setSaving(true);
+          await authedFetch(`/products/${product.id}`, { method: 'DELETE' });
+          if (editingProductId === String(product.id)) {
+            setEditingProductId('');
+            setForms((prev) => ({ ...prev, product: initialForms.product }));
+          }
+          if (selectedProductDetails?.id === product.id) setSelectedProductDetails(null);
+          showToast(`${name} was deleted`);
+          await loadCore();
+        } catch (error) {
+          showToast(error.message || 'Unable to delete this product');
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   const whatsappLink = (item) => {
@@ -1892,6 +2041,10 @@ function App() {
   });
 
   const visibleBatches = data.batches.filter((batch) => {
+    const query = stockFilters.search.trim().toLowerCase();
+    const matchesSearch = !query || [batch.short_name, batch.full_model_list, batch.name, batch.brand, batch.category, batch.colour, batch.assigned_user_name]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
     const matchesBrand = !stockFilters.brand || sameText(batch.brand, stockFilters.brand);
     const matchesCategory = !stockFilters.category || sameText(batch.category, stockFilters.category);
     const matchesColour = !stockFilters.colour || sameText(batch.colour, stockFilters.colour);
@@ -1899,22 +2052,60 @@ function App() {
       || (stockFilters.status === 'in_stock' ? Number(batch.quantity_remaining) > 0 : Number(batch.quantity_remaining) === 0);
     const matchesBatch = !stockFilters.batch || String(batch.id) === String(stockFilters.batch);
     const matchesShopkeeper = !stockFilters.shopkeeperId || String(batch.assigned_user_id) === String(stockFilters.shopkeeperId);
-    return matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch && matchesShopkeeper;
+    const matchesOwnership = !stockFilters.ownership
+      || (stockFilters.ownership === 'owner' && !batch.assigned_user_id)
+      || (stockFilters.ownership === 'shopkeeper' && Boolean(batch.assigned_user_id))
+      || (stockFilters.ownership === 'mine' && String(batch.assigned_user_id) === String(session.id));
+    return matchesSearch && matchesBrand && matchesCategory && matchesColour && matchesStatus && matchesBatch && matchesShopkeeper && matchesOwnership;
   });
 
   const combinedStock = combineStockRows(data.stock);
-  const hasBatchScopedStockFilter = Boolean(stockFilters.colour || stockFilters.batch || stockFilters.shopkeeperId);
-  const visibleStock = combinedStock
-    .filter((item) => (!stockFilters.brand || sameText(item.brand, stockFilters.brand))
-      && (!stockFilters.category || sameText(item.category, stockFilters.category)))
+  const stockWithOwnership = combinedStock.map((item) => {
+    const productBatches = data.batches.filter((batch) => batchBelongsToStockItem(batch, item));
+    const ownerBatches = productBatches.filter((batch) => !batch.assigned_user_id);
+    const shopkeeperBatches = productBatches.filter((batch) => Boolean(batch.assigned_user_id));
+    const myBatches = shopkeeperBatches.filter((batch) => String(batch.assigned_user_id) === String(session.id));
+    return {
+      ...item,
+      owner_quantity: sumBatchQuantity(ownerBatches),
+      shopkeeper_quantity: sumBatchQuantity(shopkeeperBatches),
+      my_quantity: sumBatchQuantity(myBatches),
+      owner_batch_count: ownerBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
+      shopkeeper_batch_count: shopkeeperBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
+      my_batch_count: myBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
+    };
+  });
+  const shopkeeperStockItems = stockWithOwnership.filter((item) => {
+    const query = shopkeeperStockSearch.trim().toLowerCase();
+    return !query || [productName(item), fullModelList(item), item.brand, item.category]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+  const hasBatchScopedStockFilter = Boolean(stockFilters.colour || stockFilters.batch || stockFilters.shopkeeperId || stockFilters.ownership);
+  const visibleStock = stockWithOwnership
+    .filter((item) => {
+      const query = stockFilters.search.trim().toLowerCase();
+      const matchesSearch = !query || [item.short_name, item.full_model_list, item.name, item.brand, item.category, item.description, item.shop_name]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+      return matchesSearch
+      && (!stockFilters.brand || sameText(item.brand, stockFilters.brand))
+      && (!stockFilters.category || sameText(item.category, stockFilters.category));
+    })
     .map((item) => {
       if (!hasBatchScopedStockFilter) return item;
-      const matchingBatches = visibleBatches.filter((batch) => item.product_ids.includes(String(batch.product_id)));
+      const matchingBatches = visibleBatches.filter((batch) => batchBelongsToStockItem(batch, item));
+      const ownerBatches = matchingBatches.filter((batch) => !batch.assigned_user_id);
+      const shopkeeperBatches = matchingBatches.filter((batch) => Boolean(batch.assigned_user_id));
+      const myBatches = shopkeeperBatches.filter((batch) => String(batch.assigned_user_id) === String(session.id));
       return {
         ...item,
-        quantity: matchingBatches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0),
+        quantity: sumBatchQuantity(matchingBatches),
         batch_count: matchingBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
         matching_batch_count: matchingBatches.length,
+        owner_quantity: sumBatchQuantity(ownerBatches),
+        shopkeeper_quantity: sumBatchQuantity(shopkeeperBatches),
+        my_quantity: sumBatchQuantity(myBatches),
       };
     })
     .filter((item) => (!hasBatchScopedStockFilter || item.matching_batch_count > 0)
@@ -1936,6 +2127,16 @@ function App() {
       };
     }),
   ];
+  const visibleCategoryStats = categoryStats.filter((category) => (
+    !categorySearch.trim() || category.label.toLowerCase().includes(categorySearch.trim().toLowerCase())
+  ));
+  const selectedCategoryStat = stockCategoryPage
+    ? categoryStats.find((category) => stockCategoryPage === '__all__' ? !category.name : sameText(category.name, stockCategoryPage))
+    : null;
+  const activeCategoryFilterCount = ['search', 'brand', 'colour', 'status', 'ownership'].filter((key) => Boolean(stockFilters[key])).length;
+  const ownerInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => !batch.assigned_user_id));
+  const assignedInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => Boolean(batch.assigned_user_id)));
+  const myInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => String(batch.assigned_user_id) === String(session.id)));
   const lowStockAlerts = combineLowStockAlerts(data.dashboard?.lowStock);
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
@@ -1962,7 +2163,7 @@ function App() {
                 type="button" 
                 key={id} 
                 className={`relative ${isActive ? 'active' : ''}`} 
-                onClick={() => { setActive(id); setOpen(false); }}
+                onClick={() => { if (id === 'stock-categories') openStockCategoriesHub(); else setActive(id); setOpen(false); }}
               >
                 {isActive && (
                   <motion.div 
@@ -2017,9 +2218,12 @@ function App() {
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -20, scale: 0.97 }}
               transition={{ duration: 0.2 }}
-              className="toast"
+              className={`toast ${toast.tone}`}
+              role="status"
+              aria-live="polite"
             >
-              {toast}
+              {toast.tone === 'error' ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+              <span>{toast.message}</span>
             </motion.div>
           )}
         </AnimatePresence>
@@ -2193,11 +2397,11 @@ function App() {
           {active === 'shopkeepers' && (
             <PageWrapper activeKey="shopkeepers" key="shopkeepers">
               <section className="space">
-                <FormPanel title="Create shopkeeper login" action="Create login" onSubmit={submitShopkeeper}>
-                  <Input label="Name" className="md:col-span-2" value={forms.shopkeeper.name} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, name: v } })} />
-                  <Input label="Mobile" className="md:col-span-2" value={forms.shopkeeper.contact} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, contact: v } })} />
-                  <Input label="Username" className="md:col-span-2" value={forms.shopkeeper.username} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, username: v } })} />
-                  <Input label="Password" className="md:col-span-2" value={forms.shopkeeper.password} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, password: v } })} />
+                <FormPanel title="Create shopkeeper login" action={saving ? 'Creating login...' : 'Create login'} onSubmit={submitShopkeeper} disabled={saving}>
+                  <Input label="Name" autoComplete="name" maxLength={80} className="md:col-span-2" value={forms.shopkeeper.name} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, name: v } })} />
+                  <Input label="Mobile" autoComplete="tel" inputMode="tel" maxLength={30} className="md:col-span-2" value={forms.shopkeeper.contact} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, contact: v } })} />
+                  <Input label="Username" autoComplete="off" minLength={3} maxLength={40} className="md:col-span-2" value={forms.shopkeeper.username} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, username: v } })} />
+                  <Input label="Password" type="password" autoComplete="new-password" minLength={8} maxLength={200} className="md:col-span-2" value={forms.shopkeeper.password} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, password: v } })} />
                   <Select label="Shop" className="md:col-span-4" value={forms.shopkeeper.shop_id} onChange={(v) => setForms({ ...forms, shopkeeper: { ...forms.shopkeeper, shop_id: v } })} options={[...data.shops.map((s) => [s.id, s.name]), ['new_shop', '+ Add New Shop']]} />
                   {forms.shopkeeper.shop_id === 'new_shop' && (
                     <div className="panel form-panel sub-form" style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
@@ -2222,7 +2426,7 @@ function App() {
                     {data.shopkeepers.map((user) => {
                       const initials = user.name ? user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'SK';
                       return (
-                        <motion.div variants={itemVariants} className="row" key={user.id}>
+                        <motion.div variants={itemVariants} className="row shopkeeper-row" key={user.id}>
                           <div className="flex items-center gap-3">
                             <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center font-bold text-sm shrink-0">
                               {initials}
@@ -2231,15 +2435,24 @@ function App() {
                           </div>
                           <span>
                             <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Contact</span>
-                            <span className="flex items-center gap-1.5 text-sm text-slate-600 font-medium">📞 {user.contact}</span>
+                            <span className="flex items-center gap-1.5 text-sm text-slate-600 font-medium"><Contact size={14} /> {user.contact || 'Not provided'}</span>
                           </span>
                           <span>
                             <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Assigned Shop</span>
-                            <span className="flex items-center gap-1.5 text-sm text-slate-800 font-bold">🏪 {user.shop_name}</span>
+                            <span className="flex items-center gap-1.5 text-sm text-slate-800 font-bold"><Store size={14} /> {user.shop_name}</span>
                           </span>
-                          <div className="flex flex-col items-end">
+                          <div className="shopkeeper-actions">
                             <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-1">Access Role</span>
                             <span className="status-badge paid">Branch Staff</span>
+                            <button
+                              className="shopkeeper-delete-button"
+                              type="button"
+                              disabled={saving}
+                              aria-label={`Delete ${user.name}'s shopkeeper login`}
+                              onClick={() => deleteShopkeeper(user)}
+                            >
+                              <Trash2 size={14} /> Delete login
+                            </button>
                           </div>
                         </motion.div>
                       );
@@ -2301,24 +2514,17 @@ function App() {
                     {editingProductId && <button className="soft" type="button" onClick={() => { setEditingProductId(''); setForms((prev) => ({ ...prev, product: initialForms.product })); }}>Cancel edit</button>}
                   </FormPanel>
                 )}
-                <section className="panel utility-panel">
-                  <div>
-                    <h2>Product data tools</h2>
-                    <p>Export the complete product and model list as a CSV file.</p>
+                <section className="panel product-data-tools-panel">
+                  <div className="product-data-tools-copy">
+                    <span className="product-data-tools-icon"><Download size={21} /></span>
+                    <div>
+                      <span className="product-data-tools-kicker">Catalog export</span>
+                      <h2>Product data tools</h2>
+                      <p>Download the complete product and model list as a CSV file.</p>
+                    </div>
                   </div>
                   <button className="soft" type="button" onClick={() => exportCsv('products')}><Download size={17} /> Export products/models CSV</button>
                 </section>
-                {role === 'superadmin' && (
-                  <section className="panel utility-panel price-visibility-panel">
-                    <div>
-                      <h2>Shopkeeper price visibility</h2>
-                      <p>Purchase price remains hidden unless explicitly enabled.</p>
-                    </div>
-                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_official_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_official_price_shopkeeper', e.target.checked)} /> Official price</label>
-                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_wholesale_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_wholesale_price_shopkeeper', e.target.checked)} /> Wholesale price</label>
-                    <label className="toggle-option"><input type="checkbox" checked={data.priceVisibility.show_purchase_price_shopkeeper} onChange={(e) => updatePriceVisibility('show_purchase_price_shopkeeper', e.target.checked)} /> Purchase price</label>
-                  </section>
-                )}
                 <CardGrid className="product-grid" items={data.products} render={(product) => (
                   <>
                     <div className="flex items-start justify-between w-full mb-3">
@@ -2342,6 +2548,11 @@ function App() {
                     <div className="flex gap-2 w-full mt-3">
                       <button className="soft flex-1 !min-h-[38px] text-xs font-bold" type="button" onClick={() => setSelectedProductDetails(product)}>View Details</button>
                       {role === 'superadmin' && <button className="soft flex-1 !min-h-[38px] text-xs font-bold" type="button" onClick={() => editProduct(product)}>Edit</button>}
+                      {role === 'superadmin' && (
+                        <button className="soft product-delete-button flex-1 !min-h-[38px] text-xs font-bold" type="button" disabled={saving} onClick={() => deleteProduct(product)}>
+                          <Trash2 size={14} /> Delete
+                        </button>
+                      )}
                     </div>
                   </>
                 )} />
@@ -2368,53 +2579,36 @@ function App() {
                   </div>
                 </div>
 
-                <div className="card-grid models-grid">
-                  {modelItems.map((product, index) => (
-                    <motion.article 
-                      initial={{ opacity: 0, y: 15 }}
-                      whileInView={{ opacity: 1, y: 0 }}
-                      viewport={{ once: true, margin: "-30px" }}
-                      whileHover={{ y: -4, scale: 1.012 }}
-                      whileTap={{ scale: 0.995 }}
-                      transition={{ 
-                        type: 'spring', 
-                        stiffness: 260, 
-                        damping: 24, 
-                        delay: Math.min(index * 0.02, 0.2) 
-                      }}
-                      className="panel card model-card" 
-                      key={product.id}
-                    >
-                      <div className="flex items-start justify-between w-full mb-3">
-                        <div className="card-icon-wrapper cyan !mb-0">
+                <div className="table compact-models-table">
+                  {modelItems.map((product) => (
+                    <div className="row compact-model-row" key={product.id}>
+                      <div className="inventory-primary">
+                        <div className="w-10 h-10 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
                           <Smartphone size={18} />
                         </div>
-                        <span className="status-badge stock-ok">{product.category}</span>
+                        <span>
+                          <b>{productName(product)}</b>
+                          <small>{product.brand || 'No brand'}</small>
+                          <span className="model-compatible-preview" title={fullModelList(product)}>
+                            <b>Compatible:</b> {fullModelList(product) || 'No compatible models listed'}
+                          </span>
+                        </span>
                       </div>
-                      <h3 className="product-title" title={fullModelList(product)}>{productName(product)}</h3>
-                      <p className="text-xs text-slate-500 mb-3">{product.brand}</p>
-                      
-                      <p className="product-description" title={product.description || 'Official model entry in the catalog.'}>
-                        {product.description || 'Official model entry in the catalog.'}
-                      </p>
-                      {product.colours?.length ? <div className="colour-list">{product.colours.map((colour) => <span key={colour}>{colour}</span>)}</div> : null}
-                      
-                      <div className="w-full pt-3 border-t border-slate-100 flex flex-col gap-2 mt-auto">
-                        {(role === 'customer' || role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && (
-                          <div className="flex justify-between items-center">
-                            <span className="text-[10px] text-slate-400 uppercase font-black">{role === 'customer' ? 'Retail Price' : 'Official Price'}</span>
-                            <strong className="text-teal font-extrabold text-base">{priceLabel(role === 'customer' ? product.retail_price : product.official_price)}</strong>
-                          </div>
-                        )}
-                        {role === 'customer' && (
-                          <div className="text-[11px] text-slate-500 bg-slate-50 rounded-lg p-2 mt-1 border border-slate-100/50">
-                            <span className="font-bold text-slate-700 block mb-0.5">Available At:</span>
-                            {product.available_shops || 'Currently unavailable'}
-                          </div>
-                        )}
-                        <button className="soft w-full !min-h-[38px] text-xs font-bold mt-2" type="button" onClick={() => setSelectedProductDetails(product)}>View compatibility details</button>
+                      <span className="inventory-metric">
+                        <small>Category</small>
+                        <span className="status-badge stock-ok">{product.category || 'Uncategorized'}</span>
+                      </span>
+                      <span className="inventory-metric">
+                        <small>{role === 'customer' ? 'Retail price' : 'Official price'}</small>
+                        <strong>{(role === 'customer' || role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper)
+                          ? priceLabel(role === 'customer' ? product.retail_price : product.official_price)
+                          : 'Hidden'}</strong>
+                      </span>
+                      <div className="model-row-actions">
+                        {role === 'customer' && <small>{product.available_shops || 'Currently unavailable'}</small>}
+                        <button className="soft" type="button" onClick={() => setSelectedProductDetails(product)}>View details</button>
                       </div>
-                    </motion.article>
+                    </div>
                   ))}
                   {!modelItems.length && <Empty title="No matching models found" />}
                 </div>
@@ -2428,30 +2622,48 @@ function App() {
                 <section className="stock-workspace-intro">
                   <div className="stock-workspace-copy">
                     <span className="stock-eyebrow">Inventory workspace</span>
-                    <h2>Keep daily stock work simple</h2>
-                    <p>Update quantities, receive purchase batches, and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.</p>
+                    <h2>{role === 'shopkeeper' ? 'Manage your stock without mixing it with main warehouse stock' : 'Keep daily stock work simple'}</h2>
+                    <p>{role === 'shopkeeper'
+                      ? 'Main warehouse stock remains available for sales. Quantity updates here are saved as your personal shopkeeper inventory.'
+                      : 'Update quantities, receive purchase batches, and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.'}</p>
                   </div>
-                  <button className="stock-category-link" type="button" onClick={() => setActive('stock-categories')}>
+                  <button className="stock-category-link" type="button" onClick={openStockCategoriesHub}>
                     <span className="stock-category-link-icon"><LayoutGrid size={22} /></span>
                     <span><b>Open Stock Categories</b><small>Browse, filter, and export inventory</small></span>
                   </button>
                 </section>
-                <FormPanel title="Set available stock quantity" action="Save quantity" onSubmit={updateStock}>
+                {role === 'shopkeeper' && (
+                  <section className="inventory-ownership-summary compact-summary">
+                    <article className="ownership-summary-card owner">
+                      <span>Main warehouse stock available</span>
+                      <strong>{ownerInventoryQuantity}</strong>
+                      <small>Shared stock you can sell</small>
+                    </article>
+                    <article className="ownership-summary-card mine">
+                      <span>My shopkeeper stock</span>
+                      <strong>{myInventoryQuantity}</strong>
+                      <small>Stock added and controlled by you</small>
+                    </article>
+                  </section>
+                )}
+                <FormPanel title={role === 'shopkeeper' ? 'Set my stock quantity' : 'Set available stock quantity'} action="Save quantity" onSubmit={updateStock}>
                   <Select label="Product" className="md:col-span-3" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
-                  <Input label="Available quantity" type="number" className="md:col-span-1" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
+                  <Input label={role === 'shopkeeper' ? 'My quantity' : 'Available quantity'} type="number" className="md:col-span-1" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
                 </FormPanel>
-                <FormPanel title="Add purchase-price batch" action={saving ? 'Saving...' : 'Add batch'} onSubmit={addInventoryBatch} disabled={saving || needsSpecificShop}>
-                  <Select label="Product" className="md:col-span-3" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
-                  <Input label="Quantity received" type="number" className="md:col-span-1" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
-                  {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />}
-                  {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />}
-                  {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <Input label="Official price" type="number" className="md:col-span-1" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />}
-                  <Input label="Retail price" type="number" className="md:col-span-1" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
-                  <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
-                  <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
-                  {role === 'superadmin' && <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />}
-                  <Input label="Batch notes" className="md:col-span-4" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
-                </FormPanel>
+                {role === 'superadmin' && (
+                  <FormPanel title="Add purchase-price batch" action={saving ? 'Saving...' : 'Add batch'} onSubmit={addInventoryBatch} disabled={saving || needsSpecificShop}>
+                    <Select label="Product" className="md:col-span-3" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
+                    <Input label="Quantity received" type="number" className="md:col-span-1" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
+                    <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />
+                    <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />
+                    <Input label="Official price" type="number" className="md:col-span-1" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />
+                    <Input label="Retail price" type="number" className="md:col-span-1" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
+                    <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
+                    <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
+                    <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />
+                    <Input label="Batch notes" className="md:col-span-4" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
+                  </FormPanel>
+                )}
                 {role === 'superadmin' && (
                   <section className="panel transfer-launch">
                     <div>
@@ -2465,42 +2677,62 @@ function App() {
                   <div>
                     <span className="stock-eyebrow">Live inventory</span>
                     <h2>Current stock overview</h2>
+                    {role === 'shopkeeper' && <p>{shopkeeperStockItems.length} matching models</p>}
                   </div>
-                  <button className="soft" type="button" onClick={() => setActive('stock-categories')}><LayoutGrid size={16} /> View categories</button>
+                  <div className="stock-overview-actions">
+                    {role === 'shopkeeper' && (
+                      <div className="searchbox shopkeeper-stock-search">
+                        <Search size={18} />
+                        <input
+                          aria-label="Search models in stock"
+                          placeholder="Search product or compatible model"
+                          value={shopkeeperStockSearch}
+                          onChange={(event) => setShopkeeperStockSearch(event.target.value)}
+                        />
+                      </div>
+                    )}
+                    <button className="soft" type="button" onClick={openStockCategoriesHub}><LayoutGrid size={16} /> View categories</button>
+                  </div>
                 </div>
-                {combinedStock.length ? (
-                  <motion.div 
-                    variants={listVariants}
-                    initial="hidden"
-                    whileInView="visible"
-                    viewport={{ once: true, margin: "-10px" }}
-                    className="table panel"
-                  >
-                    {combinedStock.map((item) => (
-                      <motion.div variants={itemVariants} className="row" key={item.id}>
-                        <div className="flex items-center gap-3">
+                {(role === 'shopkeeper' ? shopkeeperStockItems : stockWithOwnership).length ? (
+                  <div className="table panel inventory-stock-table">
+                    {(role === 'shopkeeper' ? shopkeeperStockItems : stockWithOwnership).map((item) => (
+                      <div className="row" key={item.id}>
+                        <div className="inventory-primary">
                           <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
                             <Smartphone size={18} />
                           </div>
-                          <span><b title={fullModelList(item)}>{productName(item)}</b><small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small></span>
+                          <span>
+                            <b>{productName(item)}</b>
+                            <small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small>
+                            {role === 'shopkeeper' && (
+                              <span className="stock-compatible-models">
+                                <small title={fullModelList(item)}><b>Compatible:</b> {fullModelList(item) || 'No compatible models listed'}</small>
+                                {fullModelList(item) && <button type="button" onClick={() => setSelectedProductDetails(item)}>View all</button>}
+                              </span>
+                            )}
+                          </span>
                         </div>
-                        <span>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Category</span>
+                        <span className="inventory-metric">
+                          <small>Category</small>
                           <span className="status-badge stock-ok">{item.category || 'Mobile'}</span>
                         </span>
-                        <span>
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-0.5">Price</span>
+                        <span className="inventory-metric">
+                          <small>Price</small>
                           <strong>{priceLabel(item.official_price || item.retail_price)}</strong>
                         </span>
-                        <div className="flex flex-col items-end">
-                          <span className="text-[10px] text-slate-400 block uppercase font-bold tracking-wider mb-1">Stock Level</span>
-                          <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs · {item.batch_count} batches</strong>
+                        <div className="inventory-balance">
+                          <small>Total available: <b>{item.quantity} pcs</b></small>
+                          <div className="inventory-owner-badges">
+                            <span className="owner-stock-chip">Main warehouse <b>{item.owner_quantity}</b></span>
+                            <span className="my-stock-chip">{role === 'shopkeeper' ? 'My stock' : 'Shopkeepers'} <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b></span>
+                          </div>
                         </div>
-                      </motion.div>
+                      </div>
                     ))}
-                  </motion.div>
+                  </div>
                 ) : (
-                  <Empty title="No stock records found" />
+                  <Empty title={role === 'shopkeeper' && shopkeeperStockSearch.trim() ? 'No models match your search' : 'No stock records found'} />
                 )}
               </section>
             </PageWrapper>
@@ -2509,30 +2741,63 @@ function App() {
           {active === 'stock-categories' && (
             <PageWrapper activeKey="stock-categories" key="stock-categories">
               <section className="space stock-categories-page">
+                {!stockCategoryPage ? (
+                  <>
                 <section className="stock-categories-hero">
                   <div>
                     <span className="stock-eyebrow">Inventory library</span>
-                    <h2>Browse stock without the clutter</h2>
-                    <p>Choose a category, refine the stock list, or download exactly the CSV report you need.</p>
+                    <h2>Open a dedicated category page</h2>
+                    <p>Each stock category has its own page for filters, exports, inventory results, and purchase history.</p>
                   </div>
-                  <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Back to stock actions</button>
+                  <div className="stock-hero-actions">
+                    <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Stock actions</button>
+                  </div>
+                </section>
+
+                <section className="inventory-ownership-summary">
+                  <article className="ownership-summary-card total">
+                    <span>Total available stock</span>
+                    <strong>{ownerInventoryQuantity + assignedInventoryQuantity}</strong>
+                    <small>Main warehouse and shopkeeper inventory combined</small>
+                  </article>
+                  <article className="ownership-summary-card owner">
+                    <span>Main warehouse stock</span>
+                    <strong>{ownerInventoryQuantity}</strong>
+                    <small>Shared inventory available in this shop</small>
+                  </article>
+                  <article className="ownership-summary-card mine">
+                    <span>{role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock'}</span>
+                    <strong>{role === 'shopkeeper' ? myInventoryQuantity : assignedInventoryQuantity}</strong>
+                    <small>{role === 'shopkeeper' ? 'Inventory added by you' : 'Inventory assigned to shopkeepers'}</small>
+                  </article>
                 </section>
 
                 <section className="stock-section-card category-browser">
                   <div className="stock-section-heading">
                     <div>
-                      <span className="stock-eyebrow">All categories</span>
+                      <span className="stock-eyebrow">Category pages</span>
                       <h2>Choose a stock category</h2>
                     </div>
-                    <span className="category-result-count">{visibleStock.length} matching products</span>
+                    <span className="category-result-count">{categoryStats.length} pages</span>
+                  </div>
+                  <div className="category-search-row">
+                    <div className="searchbox">
+                      <Search size={18} />
+                      <input
+                        placeholder="Search categories"
+                        value={categorySearch}
+                        onChange={(event) => setCategorySearch(event.target.value)}
+                      />
+                    </div>
+                    <span>{visibleCategoryStats.length} categories shown</span>
                   </div>
                   <div className="category-card-grid">
-                    {categoryStats.map((category) => (
+                    {visibleCategoryStats.map((category) => (
                       <button
                         key={category.name || 'all-categories'}
                         type="button"
-                        className={`category-card ${sameText(stockFilters.category, category.name) ? 'active' : ''}`}
-                        onClick={() => setStockFilters({ ...stockFilters, category: category.name })}
+                        className="category-card"
+                        onClick={() => openStockCategoryPage(category.name)}
                       >
                         <span className="category-icon"><Package size={20} /></span>
                         <span className="category-card-copy">
@@ -2540,21 +2805,39 @@ function App() {
                           <small>{category.products} products</small>
                         </span>
                         <span className="category-quantity"><b>{category.quantity}</b><small>pieces</small></span>
+                        <ChevronRight className="category-open-icon" size={18} />
                       </button>
                     ))}
                   </div>
+                  {!visibleCategoryStats.length && <Empty title="No category matches your search" />}
                 </section>
+                  </>
+                ) : (
+                  <>
+                    <section className="stock-categories-hero category-detail-hero">
+                      <div className="category-detail-copy">
+                        <button className="category-back-button" type="button" onClick={openStockCategoriesHub}><ArrowLeft size={16} /> Back to categories</button>
+                        <span className="stock-eyebrow">Category models</span>
+                        <h2>{selectedCategoryStat?.label || 'Stock category'}</h2>
+                        <p>Showing only {selectedCategoryStat?.label || 'this category'} models and their available stock.</p>
+                      </div>
+                      <span className="category-result-count">{selectedCategoryStat?.products || 0} models</span>
+                    </section>
+                  </>
+                )}
 
-                <section className="stock-section-card stock-filter-panel">
+                {stockCategoryPage && (
+                  <>
+                <section className="stock-section-card stock-filter-panel category-detail-hidden">
                   <div className="stock-section-heading">
                     <div>
-                      <span className="stock-eyebrow">Find inventory</span>
-                      <h2>Filter stock</h2>
+                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} inventory</span>
+                      <h2>Filter this category page</h2>
                     </div>
                     <button
                       className="soft"
                       type="button"
-                      onClick={() => setStockFilters({ brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '' })}
+                      onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' })}
                     >
                       Clear filters
                     </button>
@@ -2567,23 +2850,32 @@ function App() {
                       </button>
                     ))}
                   </div>
+                  <div className="ownership-filter-bar">
+                    <span>Inventory source</span>
+                    <button type="button" className={!stockFilters.ownership ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: '' })}>All available</button>
+                    <button type="button" className={stockFilters.ownership === 'owner' ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: 'owner' })}>Main warehouse stock</button>
+                    <button type="button" className={['mine', 'shopkeeper'].includes(stockFilters.ownership) ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: role === 'shopkeeper' ? 'mine' : 'shopkeeper' })}>
+                      {role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock'}
+                    </button>
+                  </div>
                   <div className="filter-grid">
+                    <Input label="Search this category" className="filter-search-wide" value={stockFilters.search} onChange={(v) => setStockFilters({ ...stockFilters, search: v })} />
                     <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
-                    <Select label="Category" value={stockFilters.category} onChange={(v) => setStockFilters({ ...stockFilters, category: v })} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All categories" />
+                    <Select label="Category page" value={stockFilters.category} onChange={openStockCategoryPage} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All inventory" />
                     <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
                     <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
-                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
+                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.filter((batch) => !selectedCategoryStat?.name || sameText(batch.category, selectedCategoryStat.name)).map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
                     {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => !shopId || String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
                   </div>
                 </section>
 
-                <section className="stock-section-card export-tools">
+                <section className="stock-section-card export-tools category-detail-hidden">
                   <div className="stock-section-heading">
                     <div>
-                      <span className="stock-eyebrow">Reports</span>
-                      <h2>CSV export centre</h2>
+                      <span className="stock-eyebrow">Category reports</span>
+                      <h2>Export {selectedCategoryStat?.label || 'stock'}</h2>
                     </div>
-                    <p>Exports follow your selected shop and filters.</p>
+                    <p>Exports follow this category page and your selected filters.</p>
                   </div>
                   <div className="export-action-grid">
                     <button type="button" className="export-action-card" onClick={() => exportCsv('products')}>
@@ -2591,72 +2883,122 @@ function App() {
                     </button>
                     <button type="button" className="export-action-card" onClick={() => {
                       if (!stockFilters.brand) return showToast('Select a brand in filters first to export brand-wise stock');
-                      exportCsv('stock', { brand: stockFilters.brand });
+                      exportCsv('stock', { brand: stockFilters.brand, category: selectedCategoryStat?.name || '' });
                     }}>
                       <span><Download size={18} /></span><b>Brand-wise stock</b><small>Export the selected brand</small>
                     </button>
                     <button type="button" className="export-action-card" onClick={() => {
-                      if (!stockFilters.category) return showToast('Select a category first to export category-wise stock');
-                      exportCsv('stock', { category: stockFilters.category });
+                      exportCsv('stock', { category: selectedCategoryStat?.name || '' });
                     }}>
-                      <span><Download size={18} /></span><b>Category-wise stock</b><small>Export the selected category</small>
+                      <span><Download size={18} /></span><b>{selectedCategoryStat?.name ? 'This category' : 'All stock'}</b><small>Export this category page</small>
                     </button>
                     <button type="button" className="export-action-card" onClick={() => {
                       if (role === 'superadmin' && !stockFilters.shopkeeperId) return showToast('Select a shopkeeper first to export shopkeeper-wise stock');
-                      exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId });
+                      exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId, category: selectedCategoryStat?.name || '' });
                     }}>
                       <span><Download size={18} /></span><b>Shopkeeper stock</b><small>Export assigned inventory</small>
                     </button>
-                    <button type="button" className="export-action-card" onClick={() => exportCsv('stock', { batchId: stockFilters.batch })}>
+                    <button type="button" className="export-action-card" onClick={() => exportCsv('stock', { batchId: stockFilters.batch, category: selectedCategoryStat?.name || '' })}>
                       <span><Download size={18} /></span><b>Price-batch stock</b><small>Export purchase-price batches</small>
                     </button>
                   </div>
                 </section>
 
-                <section>
+                <section className="category-model-section">
                   <div className="stock-section-heading">
                     <div>
-                      <span className="stock-eyebrow">Filtered inventory</span>
+                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} inventory</span>
                       <h2>Matching stock</h2>
                     </div>
-                    <span className="category-result-count">{visibleStock.length} results</span>
+                    <div className="category-model-toolbar">
+                      <span className="category-result-count">{visibleStock.length} models</span>
+                      <div className="category-filter-control">
+                        <button
+                          className={`category-filter-button ${activeCategoryFilterCount ? 'active' : ''}`}
+                          type="button"
+                          aria-expanded={categoryFiltersOpen}
+                          onClick={() => setCategoryFiltersOpen((open) => !open)}
+                        >
+                          <ListFilter size={17} />
+                          <span>Filter</span>
+                          {activeCategoryFilterCount > 0 && <b>{activeCategoryFilterCount}</b>}
+                        </button>
+                        {categoryFiltersOpen && (
+                          <div className="category-filter-popover">
+                            <div className="category-filter-popover-head">
+                              <div><b>Filter models</b><small>{selectedCategoryStat?.label || 'Category'} only</small></div>
+                              <button className="icon" type="button" aria-label="Close filters" onClick={() => setCategoryFiltersOpen(false)}><X size={16} /></button>
+                            </div>
+                            <div className="category-filter-fields">
+                              <Input label="Search model" value={stockFilters.search} onChange={(v) => setStockFilters({ ...stockFilters, search: v })} />
+                              <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
+                              <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
+                              <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
+                              <Select
+                                label="Inventory source"
+                                value={stockFilters.ownership}
+                                onChange={(v) => setStockFilters({ ...stockFilters, ownership: v })}
+                                options={[['owner', 'Main warehouse stock'], [role === 'shopkeeper' ? 'mine' : 'shopkeeper', role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock']]}
+                                placeholder="All available"
+                              />
+                            </div>
+                            <div className="category-filter-actions">
+                              <button className="soft" type="button" onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' })}>Clear</button>
+                              <button className="primary" type="button" onClick={() => setCategoryFiltersOpen(false)}>Show {visibleStock.length} models</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                   {visibleStock.length ? (
-                    <motion.div variants={listVariants} initial="hidden" whileInView="visible" viewport={{ once: true, margin: '-10px' }} className="table panel stock-results-table">
+                    <div className="table panel stock-results-table inventory-stock-table category-model-table">
                       {visibleStock.map((item) => (
-                        <motion.div variants={itemVariants} className="row" key={item.id}>
-                          <div className="flex items-center gap-3">
+                        <div className="row" key={item.id}>
+                          <div className="inventory-primary">
                             <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0"><Smartphone size={18} /></div>
-                            <span><b title={fullModelList(item)}>{productName(item)}</b><small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small></span>
+                            <span>
+                              <b>{productName(item)}</b>
+                              <small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small>
+                              <span className="model-compatible-preview" title={fullModelList(item)}><b>Compatible:</b> {fullModelList(item) || 'No compatible models listed'}</span>
+                            </span>
                           </div>
-                          <span><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
-                          <span><small>Price</small><strong>{priceLabel(item.official_price || item.retail_price)}</strong></span>
-                          <span><small>Stock level</small><strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs · {item.batch_count} batches</strong></span>
-                        </motion.div>
+                          <span className="inventory-metric category-column"><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
+                          <span className="inventory-metric"><small>Price</small><strong>{priceLabel(item.official_price || item.retail_price)}</strong></span>
+                          <div className="inventory-balance">
+                            <small>Total available: <b>{item.quantity} pcs</b></small>
+                            <div className="inventory-owner-badges">
+                              <span className="owner-stock-chip">Main warehouse <b>{item.owner_quantity}</b></span>
+                              <span className="my-stock-chip">{role === 'shopkeeper' ? 'My stock' : 'Shopkeepers'} <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b></span>
+                            </div>
+                          </div>
+                        </div>
                       ))}
-                    </motion.div>
+                    </div>
                   ) : <Empty title="No stock matches these filters" />}
                 </section>
 
-                <section className="stock-section-card batch-browser">
+                <section className="stock-section-card batch-browser category-detail-hidden">
                   <div className="stock-section-heading">
                     <div>
-                      <span className="stock-eyebrow">Purchase history</span>
+                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} purchase history</span>
                       <h2>Purchase-price batches</h2>
                     </div>
                     <span className="category-result-count">{visibleBatches.length} batches</span>
                   </div>
-                  <div className="table batch-table">
+                  <div className={`table batch-table ${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? 'with-price' : 'without-price'}`}>
                     {visibleBatches.length ? visibleBatches.map((batch) => (
                       <div className="row" key={batch.id}>
-                        <span><b title={fullModelList(batch)}>{productName(batch)}</b><small>{batch.brand} · {batch.colour || 'No colour'} · {batch.received_date}</small></span>
-                        {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span><small>Purchase price</small><strong>{priceLabel(batch.purchase_price)}</strong></span>}
-                        <span><small>Assigned inventory</small><strong>{batch.assigned_user_name || 'Shared shop stock'}</strong></span>
-                        <span><small>Remaining</small><strong className={`status-badge ${batch.quantity_remaining <= 3 ? 'low-stock' : 'stock-ok'}`}>{batch.quantity_remaining} / {batch.quantity_received}</strong></span>
+                        <span className="batch-product"><b title={fullModelList(batch)}>{productName(batch)}</b><small>{batch.brand} · {batch.colour || 'No colour'} · {batch.received_date}</small></span>
+                        {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span className="inventory-metric"><small>Purchase price</small><strong>{priceLabel(batch.purchase_price)}</strong></span>}
+                        <span className="inventory-metric"><small>Inventory source</small><strong>{batch.assigned_user_name || 'Main warehouse shared stock'}</strong></span>
+                        <span className="inventory-metric"><small>Remaining</small><strong className={`status-badge ${batch.quantity_remaining <= 3 ? 'low-stock' : 'stock-ok'}`}>{batch.quantity_remaining} / {batch.quantity_received}</strong></span>
                       </div>
                     )) : <Empty title="No matching price batches" />}
                   </div>
                 </section>
+                  </>
+                )}
               </section>
             </PageWrapper>
           )}
@@ -3513,6 +3855,12 @@ function App() {
             </div>
           )}
         </AnimatePresence>
+        <ConfirmationDialog
+          dialog={confirmDialog}
+          saving={saving}
+          onCancel={() => setConfirmDialog(null)}
+          onConfirm={runConfirmedAction}
+        />
       </main>
     </div>
   );
@@ -3528,8 +3876,8 @@ function FormPanel({ title, action, onSubmit, children, disabled = false }) {
   );
 }
 
-function Input({ label, value, onChange, type = 'text', className = '' }) {
-  return <label className={className}>{label}<input type={type} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
+function Input({ label, value, onChange, type = 'text', className = '', ...inputProps }) {
+  return <label className={className}>{label}<input {...inputProps} type={type} value={value} onChange={(e) => onChange(e.target.value)} /></label>;
 }
 
 function Select({ label, value, onChange, options, placeholder = 'Select', className = '' }) {
