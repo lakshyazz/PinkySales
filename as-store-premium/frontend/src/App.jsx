@@ -3414,7 +3414,7 @@ function App() {
                     )) : <Empty title="No pending payments by shop" />}
                   </div>
                 </section>
-                <section className="panel">
+                <section className="panel audit-history-panel">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
                     <h2 className="!border-0 !pb-0 !m-0">Audit history</h2>
                     {role === 'superadmin' && (
@@ -3427,11 +3427,11 @@ function App() {
                       </button>
                     )}
                   </div>
-                  <div className="table">
+                  <div className="table audit-table">
                     {data.reports.auditRows.length ? data.reports.auditRows.map((row) => (
-                      <div className="row" key={row.id}>
+                      <div className="row audit-row" key={row.id}>
                         <span><b>{row.action}</b><small>{row.actor_name} · {row.created_at}</small></span>
-                        <span>{row.details}</span>
+                        <span className="audit-details">{row.details}</span>
                       </div>
                     )) : <Empty title="No audit logs available" />}
                   </div>
@@ -3825,9 +3825,9 @@ function App() {
                               <span>Details</span>
                             </div>
                             {(detailedShopData.reports?.auditRows?.filter(r => Number(r.entity_id) === Number(detailedShopId) || String(r.details).includes(`Shop ${detailedShopId}`)) || []).map(row => (
-                              <div className="row text-sm hover:bg-slate-50/40" key={row.id} style={{ gridTemplateColumns: '2fr 1fr' }}>
+                              <div className="row audit-row text-sm hover:bg-slate-50/40" key={row.id}>
                                 <span><b>{row.action}</b><small>{row.actor_name} · {row.created_at}</small></span>
-                                <span className="text-slate-600 font-medium">{row.details}</span>
+                                <span className="audit-details text-slate-600 font-medium">{row.details}</span>
                               </div>
                             ))}
                             {!((detailedShopData.reports?.auditRows?.filter(r => Number(r.entity_id) === Number(detailedShopId) || String(r.details).includes(`Shop ${detailedShopId}`)) || []).length) && <Empty title="No audit logs found" />}

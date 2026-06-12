@@ -1090,6 +1090,26 @@ button:disabled {
   font-weight: 800;
 }
 
+.audit-history-panel,
+.audit-table,
+.audit-row,
+.audit-row > span {
+  min-width: 0;
+}
+
+.audit-row {
+  grid-template-columns: minmax(150px, 0.75fr) minmax(0, 1.5fr);
+  align-items: start;
+}
+
+.audit-details {
+  display: block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
 .shopkeeper-actions {
   display: grid;
   justify-items: end;
