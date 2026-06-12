@@ -611,11 +611,13 @@ function App() {
   const [open, setOpen] = useState(false);
   const [toast, setToast] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [tabLoading, setTabLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [selectedProductDetails, setSelectedProductDetails] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
   const toastTimerRef = useRef(null);
+  const tabLoadSequenceRef = useRef(0);
   const [data, setData] = useState({
     dashboard: null,
     shops: [],
@@ -705,6 +707,7 @@ function App() {
   const shopId = role === 'shopkeeper' ? session.shop_id : selectedShop;
   const nav = navByRole[role] || navByRole.customer;
   const needsSpecificShop = role === 'superadmin' && !shopId;
+  const shopCountDependency = ['stock', 'stock-categories'].includes(active) ? data.shops.length : 0;
 
   const authedFetch = (path, options = {}) => api(path, options, token);
   const showToast = (message, tone = inferToastTone(message)) => {
@@ -779,12 +782,20 @@ function App() {
     setLoading(true);
     setLoadError('');
     try {
-      const [shops, products, reference, priceVisibility] = await Promise.all([
-        authedFetch('/shops'),
-        role === 'customer' ? api('/catalog') : authedFetch('/products'),
-        api('/reference-data'),
-        role === 'customer' ? Promise.resolve(data.priceVisibility) : authedFetch('/settings/price-visibility'),
-      ]);
+      let shops;
+      let products;
+      let reference;
+      let priceVisibility;
+      if (role === 'customer') {
+        [shops, products, reference] = await Promise.all([
+          authedFetch('/shops'),
+          api('/catalog'),
+          api('/reference-data'),
+        ]);
+        priceVisibility = data.priceVisibility;
+      } else {
+        ({ shops, products, reference, priceVisibility } = await authedFetch('/bootstrap'));
+      }
       setData((prev) => ({
         ...prev,
         shops,
@@ -802,6 +813,13 @@ function App() {
 
   const loadTab = async (tab = active, currentShop = shopId) => {
     if (!session) return;
+    if ((tab === 'shops' && data.shops.length) || (['prices', 'models'].includes(tab) && role !== 'customer' && data.products.length)) {
+      tabLoadSequenceRef.current += 1;
+      setTabLoading(false);
+      return;
+    }
+    const requestId = ++tabLoadSequenceRef.current;
+    setTabLoading(true);
     try {
       setLoadError('');
       const scoped = currentShop ? `?shopId=${currentShop}` : '';
@@ -851,6 +869,8 @@ function App() {
       if (tab === 'catalog') set('catalog', await api(`/catalog?${new URLSearchParams(catalogFilters).toString()}`));
     } catch (error) {
       handleLoadError(error, 'Unable to refresh this page right now.');
+    } finally {
+      if (requestId === tabLoadSequenceRef.current) setTabLoading(false);
     }
   };
 
@@ -964,7 +984,7 @@ function App() {
 
   useEffect(() => {
     if (session && authReady) loadTab(active, shopId);
-  }, [active, selectedShop, session?.token, authReady, data.shops.length]);
+  }, [active, selectedShop, session?.token, authReady, shopCountDependency]);
 
   const login = (nextSession) => {
     const normalizedSession = normalizeSession(nextSession);
@@ -2228,7 +2248,7 @@ function App() {
           )}
         </AnimatePresence>
 
-        {loading && <SkeletonPage type={active === 'dashboard' ? 'dashboard' : 'list'} />}
+        {(loading || tabLoading) && <SkeletonPage type={active === 'dashboard' ? 'dashboard' : 'list'} />}
         {loadError && !loading && <div className="error">{loadError}</div>}
 
         <AnimatePresence mode="wait">

@@ -27,6 +27,10 @@ app.use((_req, res, next) => {
 });
 app.use(express.json({ limit: '256kb' }));
 
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
 await initDatabase().catch((err) => {
   console.error('[Server] Failed to initialize database:', err);
   process.exit(1);
@@ -40,6 +44,28 @@ const lastDays = (count = 7) => Array.from({ length: count }, (_, index) => {
 });
 const money = (value) => Number(value || 0);
 const productDisplayName = (row) => row.short_name || row.name;
+const responseCache = new Map();
+const sessionUserCache = new Map();
+const getCached = async (key, ttlMs, loader) => {
+  const cached = responseCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const value = Promise.resolve().then(loader);
+  responseCache.set(key, { value, expiresAt: Date.now() + ttlMs });
+  try {
+    return await value;
+  } catch (error) {
+    responseCache.delete(key);
+    throw error;
+  }
+};
+const invalidateCache = (...keys) => keys.forEach((key) => responseCache.delete(key));
+const getSessionUser = async (userId) => {
+  const cached = sessionUserCache.get(Number(userId));
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+  const user = await getRecord('SELECT id, username, role, name, shop_id FROM users WHERE id = ?', [userId]);
+  sessionUserCache.set(Number(userId), { user, expiresAt: Date.now() + 15_000 });
+  return user;
+};
 const normalizeColours = (value) => {
   const colours = Array.isArray(value) ? value : String(value || '').split(',');
   const unique = new Map();
@@ -55,9 +81,11 @@ const ensureReference = async (table, value) => {
   const existing = await getRecord(`SELECT id, name FROM ${table} WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id LIMIT 1`, [name]);
   if (existing) {
     await runQuery(`UPDATE ${table} SET is_active = TRUE WHERE id = ?`, [existing.id]);
+    invalidateCache('reference-data');
     return existing;
   }
   const result = await runQuery(`INSERT INTO ${table} (name) VALUES (?)`, [name]);
+  invalidateCache('reference-data');
   return { id: result.id, name };
 };
 const settingEnabled = (settings, key, fallback = false) => {
@@ -65,8 +93,10 @@ const settingEnabled = (settings, key, fallback = false) => {
   return value === undefined ? fallback : String(value).toLowerCase() === 'true';
 };
 const getSettings = async () => {
-  const rows = await allRecords('SELECT key, value FROM settings');
-  return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  return getCached('settings', 60_000, async () => {
+    const rows = await allRecords('SELECT key, value FROM settings');
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  });
 };
 const getPriceVisibility = async () => {
   const settings = await getSettings();
@@ -84,6 +114,37 @@ const productColumnsForRole = async (role) => {
   if (visibility.show_wholesale_price_shopkeeper) base.push('wholesale_price');
   if (visibility.show_purchase_price_shopkeeper) base.push('purchase_price');
   return base.join(', ');
+};
+const getReferenceData = () => getCached('reference-data', 300_000, async () => {
+  const [categories, colours, brands] = await Promise.all([
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM categories WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM colours WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
+    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM brands WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
+  ]);
+  return { categories, colours, brands };
+});
+const getProductsForRole = async (role) => {
+  const columns = await productColumnsForRole(role);
+  return allRecords(`SELECT ${columns} FROM products WHERE is_active = 1 AND name IS NOT NULL ORDER BY brand, COALESCE(short_name, name)`);
+};
+const getShopsForUser = async (user) => {
+  if (isCustomerRole(user.role)) {
+    return allRecords(`
+      SELECT id, name, area
+      FROM shops
+      WHERE status = 'active'
+      ORDER BY id ASC
+    `);
+  }
+  const shopId = isShopStaffRole(user.role) ? Number(user.shop_id) : null;
+  return allRecords(`
+    SELECT sh.*,
+      COALESCE((SELECT SUM(st.quantity) FROM stock st WHERE st.shop_id = sh.id), 0) AS stock,
+      COALESCE((SELECT SUM(sa.pending_amount) FROM sales sa WHERE sa.shop_id = sh.id), 0) AS pending
+    FROM shops sh
+    ${shopId ? 'WHERE sh.id = ?' : ''}
+    ORDER BY sh.id ASC
+  `, shopId ? [shopId] : []);
 };
 const batchAccessSql = (user, alias = 'ib') => isShopStaffRole(user.role)
   ? ` AND (${alias}.assigned_user_id IS NULL OR ${alias}.assigned_user_id = ${Number(user.id)})`
@@ -124,10 +185,7 @@ const authenticateToken = (req, res, next) => {
   jwt.verify(token, JWT_SECRET, async (err, tokenUser) => {
     if (err) return res.status(403).json({ error: 'Session expired. Please login again.' });
     try {
-      const user = await getRecord(
-        'SELECT id, username, role, name, shop_id FROM users WHERE id = ?',
-        [tokenUser.id]
-      );
+      const user = await getSessionUser(tokenUser.id);
       if (!user || !VALID_ROLES.has(user.role)) {
         return res.status(403).json({ error: 'This account no longer has access. Please login again.' });
       }
@@ -224,6 +282,16 @@ app.get('/api/me', authenticateToken, async (req, res) => {
   res.json({ ...user, token: createToken(user) });
 });
 
+app.get('/api/bootstrap', authenticateToken, requireShopStaff, async (req, res) => {
+  const [shops, products, reference, priceVisibility] = await Promise.all([
+    getShopsForUser(req.user),
+    getProductsForRole(req.user.role),
+    getReferenceData(),
+    getPriceVisibility(),
+  ]);
+  res.json({ shops, products, reference, priceVisibility });
+});
+
 app.get('/api/dashboard', authenticateToken, requireShopStaff, async (req, res) => {
   const shopId = scopeShopId(req);
   const trendDays = lastDays();
@@ -299,26 +367,7 @@ app.get('/api/dashboard', authenticateToken, requireShopStaff, async (req, res) 
 });
 
 app.get('/api/shops', authenticateToken, async (req, res) => {
-  if (isCustomerRole(req.user.role)) {
-    const rows = await allRecords(`
-      SELECT id, name, area
-      FROM shops
-      WHERE status = 'active'
-      ORDER BY id ASC
-    `);
-    return res.json(rows);
-  }
-
-  const shopId = isShopStaffRole(req.user.role) ? Number(req.user.shop_id) : null;
-  const rows = await allRecords(`
-    SELECT sh.*,
-      COALESCE((SELECT SUM(st.quantity) FROM stock st WHERE st.shop_id = sh.id), 0) AS stock,
-      COALESCE((SELECT SUM(sa.pending_amount) FROM sales sa WHERE sa.shop_id = sh.id), 0) AS pending
-    FROM shops sh
-    ${shopId ? 'WHERE sh.id = ?' : ''}
-    ORDER BY sh.id ASC
-  `, shopId ? [shopId] : []);
-  res.json(rows);
+  res.json(await getShopsForUser(req.user));
 });
 
 app.post('/api/shops', authenticateToken, requireSuperAdmin, async (req, res) => {
@@ -346,6 +395,7 @@ app.put('/api/shops/:id', authenticateToken, requireSuperAdmin, async (req, res)
 app.delete('/api/shops/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
   await runQuery('DELETE FROM users WHERE shop_id = ?', [req.params.id]);
   await runQuery('DELETE FROM shops WHERE id = ?', [req.params.id]);
+  sessionUserCache.clear();
   await audit(req, 'Deleted shop', 'shop', req.params.id, `Shop ID ${req.params.id}`);
   res.json({ success: true });
 });
@@ -421,6 +471,7 @@ app.delete('/api/shopkeepers/:id', authenticateToken, requireSuperAdmin, async (
       await tx.runQuery('UPDATE audit_logs SET actor_id = NULL WHERE actor_id = ?', [shopkeeperId]);
       await tx.runQuery("DELETE FROM users WHERE id = ? AND role IN ('shopkeeper', 'admin')", [shopkeeperId]);
     });
+    sessionUserCache.delete(shopkeeperId);
     await audit(req, 'Deleted shopkeeper login', 'user', shopkeeperId, `${shopkeeper.name} (@${shopkeeper.username})`);
     res.json({ success: true });
   } catch (error) {
@@ -430,12 +481,7 @@ app.delete('/api/shopkeepers/:id', authenticateToken, requireSuperAdmin, async (
 });
 
 app.get('/api/reference-data', async (_req, res) => {
-  const [categories, colours, brands] = await Promise.all([
-    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM categories WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
-    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM colours WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
-    allRecords('SELECT DISTINCT ON (LOWER(TRIM(name))) id, name FROM brands WHERE is_active = TRUE ORDER BY LOWER(TRIM(name)), id'),
-  ]);
-  res.json({ categories, colours, brands });
+  res.json(await getReferenceData());
 });
 
 app.post('/api/reference-data/:type', authenticateToken, requireSuperAdmin, async (req, res) => {
@@ -461,6 +507,7 @@ app.put('/api/settings/price-visibility', authenticateToken, requireSuperAdmin, 
       [key, String(Boolean(req.body[key]))]
     );
   }
+  invalidateCache('settings');
   await audit(req, 'Updated shopkeeper price visibility', 'settings', null, JSON.stringify(req.body));
   res.json(await getPriceVisibility());
 });
@@ -522,9 +569,7 @@ app.get('/api/export-data', authenticateToken, requireShopStaff, async (req, res
 });
 
 app.get('/api/products', authenticateToken, requireShopStaff, async (req, res) => {
-  const columns = await productColumnsForRole(req.user.role);
-  const rows = await allRecords(`SELECT ${columns} FROM products WHERE is_active = 1 AND name IS NOT NULL ORDER BY brand, COALESCE(short_name, name)`);
-  res.json(rows);
+  res.json(await getProductsForRole(req.user.role));
 });
 
 app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res) => {
