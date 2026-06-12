@@ -1695,7 +1695,7 @@ button:disabled {
 .ledger-item {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 130px auto;
+  grid-template-columns: minmax(0, 1fr) 130px;
   gap: 12px;
   align-items: center;
   padding: 10px 12px;

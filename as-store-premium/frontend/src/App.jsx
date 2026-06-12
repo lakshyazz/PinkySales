@@ -178,7 +178,7 @@ const groupPendingPayments = (rows = []) => {
   if (rows.every((row) => Array.isArray(row.items))) return rows;
   const groups = new Map();
   rows.forEach((sale) => {
-    const key = String(sale.mobile || sale.customer_id);
+    const key = `${sale.shop_id}:${sale.mobile || sale.customer_id}`;
     const group = groups.get(key) || {
       id: `customer-${key}`,
       customer_id: sale.customer_id,
@@ -1896,8 +1896,8 @@ function App() {
     printWindow.document.close();
   };
 
-  const printTaxInvoicePDF = (sale) => {
-    const printWindow = window.open('', '_blank');
+  const printTaxInvoicePDF = (sale, existingWindow = null) => {
+    const printWindow = existingWindow || window.open('', '_blank');
     if (!printWindow) {
       showToast('Allow pop-ups to open the invoice');
       return;
@@ -1929,18 +1929,47 @@ function App() {
       return wholeAmount ? words(wholeAmount) : 'Zero';
     };
 
-    const invoiceNo = `D-${String(sale.id).padStart(5, '0')}`;
+    const invoiceItems = Array.isArray(sale.items) && sale.items.length ? sale.items : [sale];
+    const isConsolidated = Boolean(sale.consolidated);
+    const purchaseDates = invoiceItems.map((item) => item.sale_date).filter(Boolean).sort();
+    const firstPurchaseDate = purchaseDates[0] || sale.sale_date;
+    const latestPurchaseDate = purchaseDates[purchaseDates.length - 1] || sale.sale_date;
+    const hasOutstandingBalance = invoiceItems.some((item) => Number(item.pending_amount || 0) > 0);
+    const outstandingDueDates = invoiceItems.filter((item) => Number(item.pending_amount || 0) > 0).map((item) => item.due_date).filter(Boolean).sort();
+    const invoiceNo = isConsolidated
+      ? `C-${String(sale.shop_id || 0).padStart(3, '0')}-${String(sale.customer_id || 0).padStart(5, '0')}`
+      : `D-${String(sale.id).padStart(5, '0')}`;
     const shopName = safe(sale.shop_name || 'AS Store');
     const shopLines = [sale.shop_address, sale.shop_area, sale.shop_phone ? `Phone: ${sale.shop_phone}` : '', 'India']
       .filter(Boolean)
       .map((line) => `<div>${safe(line)}</div>`)
       .join('');
     const customerDetails = [sale.mobile, sale.address].filter(Boolean).map(safe).join(' &middot; ');
-    const productDetails = [sale.brand, sale.description].filter(Boolean).map(safe).join(' - ');
-    const quantity = Number(sale.quantity || 1);
-    const total = Number(sale.total_amount || 0);
-    const unitPrice = quantity ? total / quantity : total;
+    const quantity = invoiceItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const total = invoiceItems.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+    const paid = invoiceItems.reduce((sum, item) => sum + Number(item.paid_amount || 0), 0);
+    const pending = invoiceItems.reduce((sum, item) => sum + Number(item.pending_amount || 0), 0);
+    const periodLabel = firstPurchaseDate === latestPurchaseDate
+      ? formatDate(firstPurchaseDate)
+      : `${formatDate(firstPurchaseDate)} to ${formatDate(latestPurchaseDate)}`;
+    const itemRows = invoiceItems.map((item, index) => {
+      const itemQuantity = Number(item.quantity || 1);
+      const itemTotal = Number(item.total_amount || 0);
+      const unitPrice = itemQuantity ? itemTotal / itemQuantity : itemTotal;
+      const productDetails = [item.brand, item.description].filter(Boolean).map(safe).join(' - ');
+      return `
+        <tr>
+          <td class="number">${index + 1}</td>
+          <td class="date">${formatDate(item.sale_date)}</td>
+          <td class="item">${safe(productName(item))}${productDetails ? `<small>${productDetails}</small>` : ''}</td>
+          <td class="qty">${itemQuantity}<br/>PCS</td>
+          <td class="money">${formatAmount(unitPrice)}</td>
+          <td class="money">${formatAmount(itemTotal)}</td>
+        </tr>
+      `;
+    }).join('');
 
+    printWindow.document.open();
     printWindow.document.write(`
       <!doctype html>
       <html lang="en">
@@ -1954,7 +1983,7 @@ function App() {
             .header { display: grid; grid-template-columns: 1fr 1fr; align-items: start; padding: 7px 9px 5px; border-bottom: 1px solid #999; }
             h1 { margin: 0; font-size: 19px; line-height: 1.1; font-weight: 800; text-transform: uppercase; }
             .shop-details { margin-top: 4px; line-height: 1.35; }
-            h2 { margin: 0; text-align: right; font-size: 33px; line-height: 1; font-weight: 400; }
+            h2 { margin: 0; text-align: right; font-size: ${isConsolidated ? '24px' : '33px'}; line-height: 1.05; font-weight: 400; }
             .meta { display: grid; grid-template-columns: 1fr 1fr; min-height: 78px; border-bottom: 1px solid #999; }
             .meta > div { padding: 4px 8px; }
             .meta > div:first-child { border-right: 1px solid #999; }
@@ -1967,6 +1996,7 @@ function App() {
             th:last-child, td:last-child { border-right: 0; }
             th { background: #f2f2f2; text-align: left; font-weight: 700; }
             .number { width: 38px; text-align: center; }
+            .date { width: 82px; white-space: nowrap; }
             .qty { width: 82px; text-align: right; }
             .money { width: 100px; text-align: right; }
             .item { min-height: 42px; }
@@ -1979,49 +2009,49 @@ function App() {
             .total-line { display: grid; grid-template-columns: 1fr 105px; gap: 12px; padding: 3px 7px; text-align: right; }
             .grand { font-weight: 800; font-size: 13px; }
             .signature { height: 110px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; border-top: 1px solid #999; }
-            @media print { body { padding: 0; } .invoice { max-width: 100%; } }
+            @media print {
+              body { padding: 0; }
+              .invoice { max-width: 100%; }
+              thead { display: table-header-group; }
+              tr, .summary { break-inside: avoid; }
+            }
           </style>
         </head>
         <body>
           <div class="invoice">
             <div class="header">
               <div><h1>${shopName}</h1><div class="shop-details">${shopLines}</div></div>
-              <h2>TAX INVOICE</h2>
+              <h2>${isConsolidated ? 'CONSOLIDATED INVOICE' : 'TAX INVOICE'}</h2>
             </div>
             <div class="meta">
               <div>
                 <div class="meta-line"><span>Invoice No</span><b>:</b><strong>${invoiceNo}</strong></div>
-                <div class="meta-line"><span>Invoice Date</span><b>:</b><strong>${formatDate(sale.sale_date)}</strong></div>
+                <div class="meta-line"><span>Invoice Date</span><b>:</b><strong>${formatDate(isConsolidated ? new Date().toISOString().slice(0, 10) : sale.sale_date)}</strong></div>
+                <div class="meta-line"><span>Purchase Period</span><b>:</b><strong>${periodLabel}</strong></div>
                 <div class="meta-line"><span>Terms</span><b>:</b><strong>Due on Receipt</strong></div>
-                <div class="meta-line"><span>Due Date</span><b>:</b><strong>${formatDate(sale.due_date || sale.sale_date)}</strong></div>
+                <div class="meta-line"><span>Due Date</span><b>:</b><strong>${outstandingDueDates.length ? formatDate(outstandingDueDates[0]) : hasOutstandingBalance ? 'Not set' : 'Paid'}</strong></div>
               </div>
               <div></div>
             </div>
             <div class="bill-title">Bill To</div>
             <div class="bill-to">${safe(sale.customer_name || 'Walk-in Customer')}${customerDetails ? `<small>${customerDetails}</small>` : ''}</div>
             <table>
-              <thead><tr><th class="number">#</th><th>Item &amp; Description</th><th class="qty">Qty</th><th class="money">Rate</th><th class="money">Amount</th></tr></thead>
-              <tbody><tr>
-                <td class="number">1</td>
-                <td class="item">${safe(productName(sale))}${productDetails ? `<small>${productDetails}</small>` : ''}</td>
-                <td class="qty">${quantity}<br/>PCS</td>
-                <td class="money">${formatAmount(unitPrice)}</td>
-                <td class="money">${formatAmount(total)}</td>
-              </tr></tbody>
+              <thead><tr><th class="number">#</th><th class="date">Date</th><th>Item &amp; Description</th><th class="qty">Qty</th><th class="money">Rate</th><th class="money">Amount</th></tr></thead>
+              <tbody>${itemRows}</tbody>
             </table>
             <div class="summary">
               <div class="notes">
                 <div>Items in Total ${quantity}</div>
                 <div class="words">Total In Words<strong>Indian Rupee ${toWords(total)} Only</strong></div>
-                <div class="notes-block">Notes<br/>${safe(sale.notes || 'Thanks for your business.')}</div>
+                <div class="notes-block">Notes<br/>${safe(isConsolidated ? 'This invoice includes all purchases made by this customer at this branch.' : sale.notes || 'Thanks for your business.')}</div>
                 <div class="notes-block">Terms &amp; Conditions<br/>Goods once sold will not be returned or exchanged.</div>
               </div>
               <div class="totals">
                 <div class="total-line"><span>Sub Total</span><span>${formatAmount(total)}</span></div>
                 <div class="total-line"><span>Shipping charge</span><span>0.00</span></div>
                 <div class="total-line grand"><span>Total</span><span>Rs.${formatAmount(total)}</span></div>
-                <div class="total-line grand"><span>Amount Paid</span><span>Rs.${formatAmount(sale.paid_amount)}</span></div>
-                <div class="total-line grand"><span>Balance Due</span><span>Rs.${formatAmount(sale.pending_amount)}</span></div>
+                <div class="total-line grand"><span>Amount Paid</span><span>Rs.${formatAmount(paid)}</span></div>
+                <div class="total-line grand"><span>Balance Due</span><span>Rs.${formatAmount(pending)}</span></div>
                 <div class="signature">Authorized Signature</div>
               </div>
             </div>
@@ -2036,6 +2066,43 @@ function App() {
       </html>
     `);
     printWindow.document.close();
+  };
+
+  const printCustomerInvoicePDF = async (customer) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast('Allow pop-ups to open the invoice');
+      return;
+    }
+
+    printWindow.document.write('<!doctype html><title>Preparing invoice</title><body style="font:16px Arial;padding:40px">Preparing complete customer invoice...</body>');
+    printWindow.document.close();
+
+    try {
+      const params = new URLSearchParams({
+        customerId: String(customer.customer_id || customer.id),
+        shopId: String(customer.shop_id || shopId),
+      });
+      const invoice = await authedFetch(`/customer-invoice?${params.toString()}`);
+      const firstSale = invoice.sales[0];
+      printTaxInvoicePDF({
+        ...firstSale,
+        customer_id: invoice.customer.id,
+        customer_name: invoice.customer.name,
+        mobile: invoice.customer.mobile,
+        address: invoice.customer.address,
+        shop_id: invoice.shop.id,
+        shop_name: invoice.shop.name,
+        shop_area: invoice.shop.area,
+        shop_address: invoice.shop.address,
+        shop_phone: invoice.shop.phone,
+        items: invoice.sales,
+        consolidated: true,
+      }, printWindow);
+    } catch (error) {
+      printWindow.close();
+      showToast(error.message || 'Unable to prepare the customer invoice');
+    }
   };
 
   const modelItems = (role === 'customer' ? data.catalog : data.products).filter((item) => {
@@ -3112,6 +3179,11 @@ function App() {
                         ))}
                         {!customerSales.length && <small>No purchases yet</small>}
                       </div>
+                      {customerSales.length > 0 && (
+                        <button className="soft" type="button" onClick={() => printCustomerInvoicePDF({ ...customer, customer_id: customer.id, shop_id: shopId })}>
+                          <ReceiptText size={16} /> Complete invoice
+                        </button>
+                      )}
                     </>
                   );
                 }} />
@@ -3287,6 +3359,7 @@ function App() {
                       <span className="status-badge due">Due {item.due_date || 'not set'}</span>
                       <input placeholder="Payment amount" type="number" value={forms.payment.sale_id === String(item.id) ? forms.payment.amount : ''} onChange={(e) => setForms({ ...forms, payment: { ...forms.payment, sale_id: String(item.id), amount: e.target.value } })} />
                       <div className="actions">
+                        <button className="soft" type="button" onClick={() => printCustomerInvoicePDF(item)}><ReceiptText size={17} /> Invoice</button>
                         <button className="soft" type="button" onClick={() => setExpandedPaymentId(expandedPaymentId === String(item.id) ? '' : String(item.id))}><ReceiptText size={17} /> Ledger</button>
                         <a className="soft" href={whatsappLink(item)} target="_blank" rel="noreferrer"><Send size={17} /> WhatsApp</a>
                         <button className="primary" onClick={() => recordPayment(item)}><CreditCard size={17} /> Paid</button>
@@ -3312,10 +3385,9 @@ function App() {
                                 >
                                   {productName(sale)}
                                 </b>
-                                <small>{sale.quantity || 1} pcs · Due {sale.due_date || 'not set'}</small>
+                                <small>{sale.quantity || 1} pcs · Purchased {sale.sale_date || 'date not set'} · Due {sale.due_date || 'not set'}</small>
                               </span>
                               <strong>{currency(sale.pending_amount)}</strong>
-                              <button className="soft" type="button" onClick={() => printTaxInvoicePDF(sale)}><ReceiptText size={16} /> Invoice</button>
                             </div>
                           ))}
                         </div>

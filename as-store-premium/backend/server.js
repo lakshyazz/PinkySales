@@ -915,6 +915,73 @@ app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/customer-invoice', authenticateToken, requireShopStaff, async (req, res) => {
+  try {
+    const customerId = Number(req.query.customerId);
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ error: 'Choose a valid customer.' });
+    }
+
+    const customer = await getRecord(`
+      SELECT c.*, sh.name AS shop_name, sh.area AS shop_area, sh.address AS shop_address, sh.phone AS shop_phone
+      FROM customers c
+      JOIN shops sh ON sh.id = c.shop_id
+      WHERE c.id = ?
+    `, [customerId]);
+    if (!customer) return res.status(404).json({ error: 'Customer not found.' });
+
+    const shopId = requireScopedShopId(req, req.query.shopId || customer.shop_id);
+    if (Number(customer.shop_id) !== shopId) {
+      return res.status(403).json({ error: 'This customer belongs to another branch.' });
+    }
+
+    const params = [shopId, customer.mobile];
+    let query = `
+      SELECT sa.*, p.name AS product_name, p.short_name AS product_short_name, p.full_model_list, p.brand, p.category, p.description,
+        c.name AS customer_name, c.mobile, c.address,
+        sh.name AS shop_name, sh.area AS shop_area, sh.address AS shop_address, sh.phone AS shop_phone
+      FROM sales sa
+      JOIN products p ON p.id = sa.product_id
+      JOIN customers c ON c.id = sa.customer_id
+      JOIN shops sh ON sh.id = sa.shop_id
+      WHERE sa.shop_id = ? AND c.mobile = ?
+    `;
+    if (isShopStaffRole(req.user.role)) {
+      query += ' AND (sa.created_by IS NULL OR sa.created_by = ?)';
+      params.push(req.user.id);
+    }
+    query += ' ORDER BY sa.sale_date ASC, sa.id ASC';
+
+    const sales = await allRecords(query, params);
+    if (!sales.length) return res.status(404).json({ error: 'No purchases found for this customer.' });
+
+    res.json({
+      customer: {
+        id: customer.id,
+        name: customer.name,
+        mobile: customer.mobile,
+        address: customer.address,
+      },
+      shop: {
+        id: customer.shop_id,
+        name: customer.shop_name,
+        area: customer.shop_area,
+        address: customer.shop_address,
+        phone: customer.shop_phone,
+      },
+      sales,
+      totals: {
+        quantity: sales.reduce((sum, sale) => sum + money(sale.quantity), 0),
+        total_amount: sales.reduce((sum, sale) => sum + money(sale.total_amount), 0),
+        paid_amount: sales.reduce((sum, sale) => sum + money(sale.paid_amount), 0),
+        pending_amount: sales.reduce((sum, sale) => sum + money(sale.pending_amount), 0),
+      },
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Unable to prepare the customer invoice.' });
+  }
+});
+
 app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
   try {
     const shopId = requireScopedShopId(req, req.body.shop_id);
@@ -1043,7 +1110,7 @@ app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req
   `, params);
     const grouped = new Map();
   rows.forEach((sale) => {
-    const key = String(sale.mobile || sale.customer_id);
+    const key = `${sale.shop_id}:${sale.mobile || sale.customer_id}`;
     const current = grouped.get(key) || {
       id: `customer-${key}`,
       customer_id: sale.customer_id,
