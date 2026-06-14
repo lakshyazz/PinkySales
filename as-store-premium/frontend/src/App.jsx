@@ -1379,31 +1379,23 @@ function App() {
 
     try {
       setSaving(true);
-      let remainingPaid = Number(forms.sale.paid_amount || 0);
-
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const itemTotal = Number(item.total_amount);
-        const itemPaid = Math.min(remainingPaid, itemTotal);
-        remainingPaid -= itemPaid;
-
-        await authedFetch('/sales', {
-          method: 'POST',
-          body: JSON.stringify({
-            shop_id: shopId,
+      await authedFetch('/sales', {
+        method: 'POST',
+        body: JSON.stringify({
+          shop_id: shopId,
+          customer_id: customerId,
+          paid_amount: String(Number(forms.sale.paid_amount || 0)),
+          due_date: dueDate,
+          notes,
+          payment_mode: forms.sale.payment_mode,
+          items: items.map((item) => ({
             product_id: item.product_id,
             batch_id: item.batch_id || null,
-            customer_id: customerId,
-            quantity: item.quantity,
-            total_amount: String(itemTotal),
-            paid_amount: String(itemPaid),
-            due_date: dueDate,
-            notes: notes,
-            payment_mode: forms.sale.payment_mode,
+            quantity: Number(item.quantity),
             price_type: item.price_type,
-          }),
-        });
-      }
+          })),
+        }),
+      });
 
       setForms((prev) => ({
         ...prev,
@@ -2155,7 +2147,7 @@ function App() {
   });
   const dashboardModelItems = (data.dashboard?.modelAvailability || []).filter((item) => {
     const query = dashboardSearch.trim().toLowerCase();
-    return query && [item.short_name, item.full_model_list, item.name, item.brand, item.category, item.available_locations]
+    return query && [item.short_name, item.full_model_list, item.name, item.brand, item.category, item.description, item.available_locations]
       .filter(Boolean).some((value) => String(value).toLowerCase().includes(query));
   });
   const visibleSales = data.sales.filter((sale) => {
@@ -2408,7 +2400,15 @@ function App() {
                     <div className="dashboard-search-results">
                       {dashboardModelItems.map((product) => (
                         <div className="dashboard-search-result" key={product.id}>
-                          <div className="inventory-primary"><div className="w-10 h-10 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0"><Smartphone size={18} /></div><span><b>{productName(product)}</b><small>{product.brand || 'No brand'} · {product.category || 'Uncategorized'}</small></span></div>
+                          <div className="inventory-primary dashboard-product-info">
+                            <div className="w-10 h-10 rounded-lg bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0"><Smartphone size={18} /></div>
+                            <span>
+                              <b>{productName(product)}</b>
+                              <small><strong>Brand:</strong> {product.brand || 'Not set'} · <strong>Category:</strong> {product.category || 'Uncategorized'}</small>
+                              <small><strong>Description:</strong> {product.description || 'No description provided'}</small>
+                              <small title={fullModelList(product)}><strong>Compatible:</strong> {fullModelList(product) || 'Not specified'}</small>
+                            </span>
+                          </div>
                           <span className="inventory-metric"><small>Warehouse</small><strong>{product.warehouse_stock} pcs</strong></span>
                           <span className="inventory-metric"><small>All stock</small><strong>{product.available_stock} pcs</strong></span>
                           <span className="inventory-metric"><small>Available at</small><strong title={product.available_locations}>{product.available_locations || 'Out of stock'}</strong></span>

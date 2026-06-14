@@ -1869,6 +1869,22 @@ button:disabled {
   white-space: nowrap;
 }
 
+.dashboard-product-info small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-product-info small strong {
+  color: var(--ink-soft);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .compact-price-grid {
   grid-template-columns: 1fr;
   gap: 10px;

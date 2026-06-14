@@ -367,7 +367,7 @@ app.get('/api/dashboard', authenticateToken, requireShopStaff, async (req, res) 
       GROUP BY due_date
     `, shopId ? [...trendDays, shopId] : trendDays),
     allRecords(`
-      SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category, p.official_price, p.sale_price,
+      SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category, p.description, p.colours, p.official_price, p.sale_price,
         COALESCE(SUM(ib.quantity_remaining), 0) AS available_stock,
         COALESCE(SUM(ib.quantity_remaining) FILTER (WHERE sh.location_type = 'warehouse'), 0) AS warehouse_stock,
         STRING_AGG(DISTINCT CASE WHEN ib.quantity_remaining > 0 THEN sh.name END, ', ') AS available_locations
@@ -1021,65 +1021,101 @@ app.get('/api/customer-invoice', authenticateToken, requireShopStaff, async (req
 app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
   try {
     const shopId = requireScopedShopId(req, req.body.shop_id);
-    const { product_id, customer_id, quantity = 1, paid_amount, due_date, notes, batch_id, payment_mode = 'cash', price_type } = req.body;
-    if (!product_id || !customer_id || !['retail', 'wholesale'].includes(price_type)) {
-      return res.status(400).json({ error: 'Product, customer and selling price type are required.' });
+    const { customer_id, paid_amount, due_date, notes, payment_mode = 'cash' } = req.body;
+    const items = Array.isArray(req.body.items) && req.body.items.length
+      ? req.body.items
+      : [{ product_id: req.body.product_id, quantity: req.body.quantity ?? 1, batch_id: req.body.batch_id, price_type: req.body.price_type }];
+    if (!customer_id || items.some((item) => !item.product_id || !['retail', 'wholesale'].includes(item.price_type))) {
+      return res.status(400).json({ error: 'Customer, products and selling price types are required.' });
     }
-    const saleQuantity = Number(quantity);
-    if (!Number.isInteger(saleQuantity) || saleQuantity <= 0) return res.status(400).json({ error: 'Quantity must be at least 1.' });
 
     const result = await runTransaction(async (tx) => {
-      const product = await tx.getRecord('SELECT sale_price, wholesale_price FROM products WHERE id = ?', [product_id]);
-      const unitPrice = money(price_type === 'wholesale' ? product?.wholesale_price : product?.sale_price);
-      if (!product || unitPrice <= 0) {
-        const error = new Error(`${price_type === 'wholesale' ? 'Wholesale' : 'Retail'} price is not set for this product.`);
-        error.status = 400;
-        throw error;
+      const preparedItems = [];
+      const reservedByBatch = new Map();
+      for (const item of items) {
+        const saleQuantity = Number(item.quantity);
+        if (!Number.isInteger(saleQuantity) || saleQuantity <= 0) {
+          const error = new Error('Every item quantity must be at least 1.');
+          error.status = 400;
+          throw error;
+        }
+        const product = await tx.getRecord('SELECT short_name, name, sale_price, wholesale_price FROM products WHERE id = ?', [item.product_id]);
+        const unitPrice = money(item.price_type === 'wholesale' ? product?.wholesale_price : product?.sale_price);
+        if (!product || unitPrice <= 0) {
+          const error = new Error(`${item.price_type === 'wholesale' ? 'Wholesale' : 'Retail'} price is not set for ${product?.short_name || product?.name || 'this product'}.`);
+          error.status = 400;
+          throw error;
+        }
+        const batches = await tx.allRecords(
+          `SELECT id, purchase_price, quantity_remaining FROM inventory_batches ib
+           WHERE shop_id = ? AND product_id = ? AND quantity_remaining > 0
+             ${item.batch_id ? 'AND id = ?' : ''}${batchAccessSql(req.user)}
+           ORDER BY received_date ASC, id ASC`,
+          item.batch_id ? [shopId, item.product_id, item.batch_id] : [shopId, item.product_id]
+        );
+        const availableBatches = batches.map((batch) => ({
+          ...batch,
+          quantity_remaining: Math.max(Number(batch.quantity_remaining || 0) - Number(reservedByBatch.get(batch.id) || 0), 0),
+        })).filter((batch) => batch.quantity_remaining > 0);
+        const available = availableBatches.reduce((sum, batch) => sum + batch.quantity_remaining, 0);
+        if (available < saleQuantity) {
+          const error = new Error(`Not enough stock for ${product.short_name || product.name}.`);
+          error.status = 400;
+          throw error;
+        }
+        let toReserve = saleQuantity;
+        const reservedBatches = [];
+        for (const batch of availableBatches) {
+          if (toReserve <= 0) break;
+          const reserved = Math.min(toReserve, batch.quantity_remaining);
+          reservedByBatch.set(batch.id, Number(reservedByBatch.get(batch.id) || 0) + reserved);
+          reservedBatches.push({ ...batch, quantity_remaining: reserved });
+          toReserve -= reserved;
+        }
+        preparedItems.push({ ...item, saleQuantity, saleTotal: unitPrice * saleQuantity, batches: reservedBatches });
       }
-      const saleTotal = unitPrice * saleQuantity;
-      if (money(paid_amount) > saleTotal) {
+
+      const totalAmount = preparedItems.reduce((sum, item) => sum + item.saleTotal, 0);
+      if (money(paid_amount) > totalAmount) {
         const error = new Error('Paid amount cannot exceed the sale total.');
         error.status = 400;
         throw error;
       }
-      const batches = await tx.allRecords(
-        `SELECT id, purchase_price, quantity_remaining FROM inventory_batches ib
-         WHERE shop_id = ? AND product_id = ? AND quantity_remaining > 0
-           ${batch_id ? 'AND id = ?' : ''}${batchAccessSql(req.user)}
-         ORDER BY received_date ASC, id ASC`,
-        batch_id ? [shopId, product_id, batch_id] : [shopId, product_id]
-      );
-      const available = batches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0);
-      if (available < saleQuantity) {
-        const error = new Error('Not enough stock in this shop.');
-        error.status = 400;
-        throw error;
-      }
-      const pending = Math.max(saleTotal - money(paid_amount), 0);
-      const insertResult = await tx.runQuery(
-        'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status, created_by, payment_mode, price_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [shopId, product_id, customer_id, saleQuantity, saleTotal, paid_amount || 0, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid', req.user.id, payment_mode, price_type]
-      );
-      let remaining = saleQuantity;
-      for (const batch of batches) {
-        if (remaining <= 0) break;
-        const allocated = Math.min(remaining, Number(batch.quantity_remaining));
-        await tx.runQuery('UPDATE inventory_batches SET quantity_remaining = quantity_remaining - ? WHERE id = ?', [allocated, batch.id]);
-        await tx.runQuery(
-          'INSERT INTO sale_batch_allocations (sale_id, batch_id, quantity, purchase_price) VALUES (?, ?, ?, ?)',
-          [insertResult.id, batch.id, allocated, batch.purchase_price]
+
+      let remainingPaid = money(paid_amount);
+      const saleIds = [];
+      let totalPending = 0;
+      for (const item of preparedItems) {
+        const itemPaid = Math.min(remainingPaid, item.saleTotal);
+        remainingPaid -= itemPaid;
+        const pending = Math.max(item.saleTotal - itemPaid, 0);
+        totalPending += pending;
+        const insertResult = await tx.runQuery(
+          'INSERT INTO sales (shop_id, product_id, customer_id, quantity, total_amount, paid_amount, pending_amount, due_date, sale_date, notes, status, created_by, payment_mode, price_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [shopId, item.product_id, customer_id, item.saleQuantity, item.saleTotal, itemPaid, pending, due_date || '', today(), notes || '', pending > 0 ? 'open' : 'paid', req.user.id, payment_mode, item.price_type]
         );
-        remaining -= allocated;
+        saleIds.push(insertResult.id);
+        let remaining = item.saleQuantity;
+        for (const batch of item.batches) {
+          if (remaining <= 0) break;
+          const allocated = Math.min(remaining, Number(batch.quantity_remaining));
+          await tx.runQuery('UPDATE inventory_batches SET quantity_remaining = quantity_remaining - ? WHERE id = ?', [allocated, batch.id]);
+          await tx.runQuery(
+            'INSERT INTO sale_batch_allocations (sale_id, batch_id, quantity, purchase_price) VALUES (?, ?, ?, ?)',
+            [insertResult.id, batch.id, allocated, batch.purchase_price]
+          );
+          remaining -= allocated;
+        }
+        await syncStockFromBatches(tx, shopId, item.product_id);
+        if (itemPaid > 0) {
+          await tx.runQuery('INSERT INTO payments (sale_id, amount, payment_date, note) VALUES (?, ?, ?, ?)', [insertResult.id, itemPaid, today(), 'Initial sale payment']);
+        }
       }
-      await syncStockFromBatches(tx, shopId, product_id);
-      if (money(paid_amount) > 0) {
-        await tx.runQuery('INSERT INTO payments (sale_id, amount, payment_date, note) VALUES (?, ?, ?, ?)', [insertResult.id, paid_amount, today(), 'Initial sale payment']);
-      }
-      return { id: insertResult.id, pending_amount: pending };
+      return { ids: saleIds, pending_amount: totalPending };
     });
 
-    await audit(req, 'Created sale', 'sale', result.id, `Pending ${result.pending_amount}`);
-    res.status(201).json({ id: result.id, pending_amount: result.pending_amount });
+    await audit(req, 'Created sale', 'sale', result.ids[0], `${result.ids.length} item(s), pending ${result.pending_amount}`);
+    res.status(201).json({ ids: result.ids, pending_amount: result.pending_amount });
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || 'Unable to create sale.' });
   }
