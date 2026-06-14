@@ -556,8 +556,8 @@ app.get('/api/export-data', authenticateToken, requireShopStaff, async (req, res
   const shopId = isShopStaffRole(req.user.role) ? Number(req.user.shop_id) : Number(req.query.shopId || 0);
   const visibility = await getPriceVisibility();
   const priceColumns = req.user.role === 'superadmin'
-    ? 'ib.purchase_price, ib.wholesale_price, ib.official_price, ib.retail_price,'
-    : `${visibility.show_purchase_price_shopkeeper ? 'ib.purchase_price,' : ''}${visibility.show_wholesale_price_shopkeeper ? 'ib.wholesale_price,' : ''}${visibility.show_official_price_shopkeeper ? 'ib.official_price,' : ''} ib.retail_price,`;
+    ? 'ib.purchase_price, ib.wholesale_price, p.sale_price,'
+    : `${visibility.show_purchase_price_shopkeeper ? 'ib.purchase_price,' : ''}${visibility.show_wholesale_price_shopkeeper ? 'ib.wholesale_price,' : ''} p.sale_price,`;
   const params = [];
   const where = ['1 = 1'];
   if (shopId) {
@@ -620,15 +620,15 @@ app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res)
     return isNaN(num) ? fallback : num;
   };
   
-  const officialPriceNum = Number(official_price);
-  if (!compatibilityModels || !displayName || !brand || !category || isNaN(officialPriceNum) || officialPriceNum <= 0) {
-    return res.status(400).json({ error: 'Short name, compatible models, brand, category and a valid official price are required.' });
+  const salePriceNum = Number(sale_price ?? official_price);
+  if (!compatibilityModels || !displayName || !brand || !category || isNaN(salePriceNum) || salePriceNum <= 0) {
+    return res.status(400).json({ error: 'Short name, compatible models, brand, category and a valid sale price are required.' });
   }
 
   const purchasePriceNum = parsePrice(purchase_price, null);
-  const salePriceNum = parsePrice(sale_price, officialPriceNum);
   const wholesalePriceNum = parsePrice(wholesale_price, null);
-  const retailPriceNum = parsePrice(retail_price, officialPriceNum);
+  const officialPriceNum = salePriceNum;
+  const retailPriceNum = salePriceNum;
 
   const result = await runQuery(
     `INSERT INTO products (
@@ -669,15 +669,15 @@ app.put('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, r
     return isNaN(num) ? fallback : num;
   };
   
-  const officialPriceNum = Number(official_price);
-  if (!compatibilityModels || !displayName || !brand || !category || isNaN(officialPriceNum) || officialPriceNum <= 0) {
-    return res.status(400).json({ error: 'Short name, compatible models, brand, category and a valid official price are required.' });
+  const salePriceNum = Number(sale_price ?? official_price);
+  if (!compatibilityModels || !displayName || !brand || !category || isNaN(salePriceNum) || salePriceNum <= 0) {
+    return res.status(400).json({ error: 'Short name, compatible models, brand, category and a valid sale price are required.' });
   }
 
   const purchasePriceNum = parsePrice(purchase_price, null);
-  const salePriceNum = parsePrice(sale_price, officialPriceNum);
   const wholesalePriceNum = parsePrice(wholesale_price, null);
-  const retailPriceNum = parsePrice(retail_price, officialPriceNum);
+  const officialPriceNum = salePriceNum;
+  const retailPriceNum = salePriceNum;
 
   await runQuery(
     `UPDATE products SET

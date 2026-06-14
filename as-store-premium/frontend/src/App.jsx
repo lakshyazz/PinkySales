@@ -962,7 +962,7 @@ function App() {
 
   const getStockMetrics = () => {
     const totalQty = detailedShopData.stock.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-    const totalValue = detailedShopData.stock.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.official_price || 0)), 0);
+    const totalValue = detailedShopData.stock.reduce((sum, item) => sum + (Number(item.quantity || 0) * Number(item.sale_price || 0)), 0);
     const lowStockCount = detailedShopData.stock.filter(item => Number(item.quantity || 0) <= 3).length;
     return { totalQty, totalValue, lowStockCount };
   };
@@ -1190,8 +1190,7 @@ function App() {
           { label: 'Colour', key: 'colours' },
           { label: 'Purchase Price', key: 'purchase_price' },
           { label: 'Wholesale Price', key: 'wholesale_price' },
-          { label: 'Official Price', key: 'official_price' },
-          { label: 'Retail Price', key: 'retail_price' }
+          { label: 'Sale Price', key: 'sale_price' }
         ];
       } else {
         columnsMapping = [
@@ -1202,7 +1201,7 @@ function App() {
           { label: 'Colour', key: 'colour' },
           { label: 'Purchase Price', key: 'purchase_price' },
           { label: 'Wholesale Price', key: 'wholesale_price' },
-          { label: 'Official/Retail Price', key: 'retail_price' },
+          { label: 'Sale Price', key: 'sale_price' },
           { label: 'Quantity', key: 'quantity' },
           { label: 'Shopkeeper Name', key: 'shopkeeper_name' },
           { label: 'Date Added', key: 'date_added' },
@@ -1211,16 +1210,7 @@ function App() {
       }
 
       const sampleRow = rows[0];
-      const activeColumns = columnsMapping.filter((col) => {
-        if (col.key === 'retail_price' && sampleRow.retail_price === undefined) {
-          if (sampleRow.official_price !== undefined) {
-            col.key = 'official_price';
-            return true;
-          }
-          return false;
-        }
-        return sampleRow[col.key] !== undefined;
-      });
+      const activeColumns = columnsMapping.filter((col) => sampleRow[col.key] !== undefined);
 
       const csvRows = [
         activeColumns.map((col) => col.label),
@@ -1497,19 +1487,19 @@ function App() {
       name: forms.product.full_model_list.trim(),
       brand: forms.product.brand.trim(),
       category: forms.product.category.trim(),
-      official_price: numericPrice(forms.product.official_price),
+      official_price: numericPrice(forms.product.sale_price),
       purchase_price: numericPrice(forms.product.purchase_price),
       sale_price: numericPrice(forms.product.sale_price),
       wholesale_price: numericPrice(forms.product.wholesale_price),
-      retail_price: numericPrice(forms.product.retail_price),
+      retail_price: numericPrice(forms.product.sale_price),
       description: forms.product.description.trim(),
       colours: forms.product.colours.split(',').map((colour) => colour.trim()).filter(Boolean),
     };
 
-    if (!payload.short_name || !payload.full_model_list || !payload.brand || !payload.category || !Number.isFinite(payload.official_price) || payload.official_price <= 0) {
-      return showToast('Enter short name, compatible models, brand, category, and a valid official price');
+    if (!payload.short_name || !payload.full_model_list || !payload.brand || !payload.category || !Number.isFinite(payload.sale_price) || payload.sale_price <= 0) {
+      return showToast('Enter short name, compatible models, brand, category, and a valid sale price');
     }
-    const optionalPrices = [payload.purchase_price, payload.sale_price, payload.wholesale_price, payload.retail_price].filter((price) => price !== null);
+    const optionalPrices = [payload.purchase_price, payload.wholesale_price].filter((price) => price !== null);
     if (optionalPrices.some((price) => !Number.isFinite(price) || price < 0)) return showToast('All entered prices must be 0 or more');
     if (!Number.isInteger(openingStock) || openingStock < 0) {
       return showToast('Opening stock must be 0 or more');
@@ -1598,9 +1588,9 @@ function App() {
     const rows = stockData.map(item => `
       <tr>
         <td><strong>${productName(item)}</strong><br><small style="color: #64748b;">${item.brand} · ${item.category || 'Mobile'}</small></td>
-        <td style="text-align: right;">₹${Number(item.official_price).toLocaleString('en-IN')}</td>
+        <td style="text-align: right;">₹${Number(item.sale_price).toLocaleString('en-IN')}</td>
         <td style="text-align: center; font-weight: bold; ${item.quantity <= 3 ? 'color: #dc2626;' : ''}">${item.quantity} pcs</td>
-        <td style="text-align: right; font-weight: bold;">₹${(Number(item.quantity) * Number(item.official_price)).toLocaleString('en-IN')}</td>
+        <td style="text-align: right; font-weight: bold;">₹${(Number(item.quantity) * Number(item.sale_price)).toLocaleString('en-IN')}</td>
       </tr>
     `).join('');
 
@@ -1647,7 +1637,7 @@ function App() {
             <thead>
               <tr>
                 <th style="text-align: left;">Product Model</th>
-                <th style="text-align: right; width: 140px;">Official Price</th>
+                <th style="text-align: right; width: 140px;">Sale Price</th>
                 <th style="text-align: center; width: 120px;">Available Qty</th>
                 <th style="text-align: right; width: 160px;">Total Value</th>
               </tr>
@@ -2375,7 +2365,10 @@ function App() {
                 </div>
                 <section className="panel dashboard-model-search">
                   <div className="dashboard-search-heading">
-                    <div><span className="eyebrow">Inventory lookup</span><h2>Find stock across Warehouse and shops</h2></div>
+                    <div className="dashboard-search-heading-copy">
+                      <span className="dashboard-search-icon"><Package size={21} /></span>
+                      <div><span className="eyebrow">Inventory lookup</span><h2>Find stock across Warehouse and shops</h2><p>Search a model to instantly see its location, quantity, and sale price.</p></div>
+                    </div>
                     {dashboardSearch && <span className="status-badge stock-ok">{dashboardModelItems.length} matches</span>}
                   </div>
                   <div className="searchbox"><Search size={18} /><input placeholder="Search model, brand, category, shop, or Warehouse" value={dashboardSearch} onChange={(event) => setDashboardSearch(event.target.value)} /></div>
@@ -2387,7 +2380,7 @@ function App() {
                           <span className="inventory-metric"><small>Warehouse</small><strong>{product.warehouse_stock} pcs</strong></span>
                           <span className="inventory-metric"><small>All stock</small><strong>{product.available_stock} pcs</strong></span>
                           <span className="inventory-metric"><small>Available at</small><strong title={product.available_locations}>{product.available_locations || 'Out of stock'}</strong></span>
-                          <span className="inventory-metric"><small>Official / Sale</small><strong>{priceLabel(product.official_price)} / {priceLabel(product.sale_price)}</strong></span>
+                          <span className="inventory-metric"><small>Sale price</small><strong>{priceLabel(product.sale_price)}</strong></span>
                           <button className="soft" type="button" onClick={() => setSelectedProductDetails(product)}>View details</button>
                         </div>
                       ))}
@@ -2626,11 +2619,9 @@ function App() {
                         <button className="soft" type="button" onClick={() => addReferenceOption('categories', newReference.name)}>Add category</button>
                       </div>
                     )}
-                    <Input label="Official price" type="number" className="md:col-span-1" value={forms.product.official_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, official_price: v } })} />
                     <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.product.purchase_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, purchase_price: v } })} />
                     <Input label="Sale price" type="number" className="md:col-span-1" value={forms.product.sale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, sale_price: v } })} />
                     <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.product.wholesale_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, wholesale_price: v } })} />
-                    <Input label="Retail price" type="number" className="md:col-span-1" value={forms.product.retail_price} onChange={(v) => setForms({ ...forms, product: { ...forms.product, retail_price: v } })} />
                     {!editingProductId && <Input label="Opening stock" type="number" className="md:col-span-1" value={forms.product.opening_stock} onChange={(v) => setForms({ ...forms, product: { ...forms.product, opening_stock: v } })} />}
                     <Input label="Description" className="md:col-span-4" value={forms.product.description} onChange={(v) => setForms({ ...forms, product: { ...forms.product, description: v } })} />
                     <Select
@@ -2683,9 +2674,7 @@ function App() {
                     </p>
                     <p className="text-xs text-slate-500">{product.brand}{product.colours?.length ? ` · ${product.colours.join(', ')}` : ''}</p>
                     <div className="price-stack">
-                      {(role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper) && <span><small>Official</small><strong>{priceLabel(product.official_price)}</strong></span>}
                       <span><small>Sale</small><strong>{priceLabel(product.sale_price)}</strong></span>
-                      <span><small>Retail</small><strong>{priceLabel(product.retail_price)}</strong></span>
                       {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span><small>Purchase</small><strong>{priceLabel(product.purchase_price)}</strong></span>}
                       {(role === 'superadmin' || data.priceVisibility.show_wholesale_price_shopkeeper) && <span><small>Wholesale</small><strong>{priceLabel(product.wholesale_price)}</strong></span>}
                     </div>
@@ -2743,10 +2732,8 @@ function App() {
                         <span className="status-badge stock-ok">{product.category || 'Uncategorized'}</span>
                       </span>
                       <span className="inventory-metric">
-                        <small>{role === 'customer' ? 'Retail price' : 'Official price'}</small>
-                        <strong>{(role === 'customer' || role === 'superadmin' || data.priceVisibility.show_official_price_shopkeeper)
-                          ? priceLabel(role === 'customer' ? product.retail_price : product.official_price)
-                          : 'Hidden'}</strong>
+                        <small>Sale price</small>
+                        <strong>{priceLabel(product.sale_price)}</strong>
                       </span>
                       <div className="model-row-actions">
                         {role === 'customer' && <small>{product.available_shops || 'Currently unavailable'}</small>}
@@ -2791,7 +2778,7 @@ function App() {
                   </section>
                 )}
                 <FormPanel title={role === 'shopkeeper' ? 'Set my stock quantity' : 'Set available stock quantity'} action="Save quantity" onSubmit={updateStock}>
-                  <Select label="Product" className="md:col-span-3" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
+                  <Select label="Product" className="md:col-span-3" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.sale_price)}`])} />
                   <Input label={role === 'shopkeeper' ? 'My quantity' : 'Available quantity'} type="number" className="md:col-span-1" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
                 </FormPanel>
                 {role === 'superadmin' && (
@@ -2801,7 +2788,6 @@ function App() {
                     <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />
                     <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />
                     <Input label="Official price" type="number" className="md:col-span-1" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />
-                    <Input label="Retail price" type="number" className="md:col-span-1" value={forms.batch.retail_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, retail_price: v } })} />
                     <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
                     <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
                     <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />
@@ -2863,7 +2849,7 @@ function App() {
                         </span>
                         <span className="inventory-metric">
                           <small>Price</small>
-                          <strong>{priceLabel(item.official_price || item.retail_price)}</strong>
+                          <strong>{priceLabel(item.sale_price)}</strong>
                         </span>
                         <div className="inventory-balance">
                           <small>Total available: <b>{item.quantity} pcs</b></small>
@@ -3108,7 +3094,7 @@ function App() {
                             </span>
                           </div>
                           <span className="inventory-metric category-column"><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
-                          <span className="inventory-metric"><small>Price</small><strong>{priceLabel(item.official_price || item.retail_price)}</strong></span>
+                          <span className="inventory-metric"><small>Sale price</small><strong>{priceLabel(item.sale_price)}</strong></span>
                           <div className="inventory-balance">
                             <small>Total available: <b>{item.quantity} pcs</b></small>
                             <div className="inventory-owner-badges">
@@ -3348,7 +3334,7 @@ function App() {
               <section className="space">
                 {role === 'shopkeeper' && (
                   <FormPanel title="Request stock from owner" action={saving ? 'Sending...' : 'Send request'} onSubmit={submitRequest} disabled={saving}>
-                    <Select label="Known product" className="md:col-span-2" value={forms.request.product_id} onChange={(v) => setForms({ ...forms, request: { ...forms.request, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.official_price)}`])} />
+                    <Select label="Known product" className="md:col-span-2" value={forms.request.product_id} onChange={(v) => setForms({ ...forms, request: { ...forms.request, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.sale_price)}`])} />
                     <Input label="New model name" className="md:col-span-2" value={forms.request.model_name} onChange={(v) => setForms({ ...forms, request: { ...forms.request, model_name: v } })} />
                     <Input label="Quantity needed" type="number" className="md:col-span-1" value={forms.request.quantity} onChange={(v) => setForms({ ...forms, request: { ...forms.request, quantity: v } })} />
                     <Input label="Message" className="md:col-span-3" value={forms.request.message} onChange={(v) => setForms({ ...forms, request: { ...forms.request, message: v } })} />
@@ -3525,7 +3511,7 @@ function App() {
                     <p className="product-description" title={product.description || 'No description provided.'}>
                       {product.description || 'No description provided.'}
                     </p>
-                    <strong>{priceLabel(product.retail_price || product.sale_price || product.official_price)}</strong>
+                    <strong>{priceLabel(product.sale_price || product.official_price)}</strong>
                     <small className="mb-2">{product.available_shops || 'Currently unavailable'}</small>
                     <button className="soft w-full !min-h-[38px] text-xs font-bold mt-2" type="button" onClick={() => setSelectedProductDetails(product)}>View details</button>
                   </>
@@ -3764,7 +3750,7 @@ function App() {
                             {detailedShopData.stock.map(item => (
                               <div className="row text-sm hover:bg-slate-50/40" key={item.id} style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
                                 <span><b title={fullModelList(item)}>{productName(item)}</b><small>{item.brand}</small></span>
-                                <span className="font-semibold text-slate-600">{priceLabel(item.official_price)}</span>
+                                <span className="font-semibold text-slate-600">{priceLabel(item.sale_price)}</span>
                                 <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs</strong>
                               </div>
                             ))}
@@ -3980,17 +3966,9 @@ function App() {
                   <div>
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-3">Pricing details</span>
                     <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4 divide-y divide-slate-100">
-                      {(role === 'superadmin' || (role === 'shopkeeper' && data.priceVisibility.show_official_price_shopkeeper)) && <div className="flex justify-between items-center py-2.5">
-                        <span className="text-sm font-bold text-slate-500">Official Price</span>
-                        <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.official_price)}</strong>
-                      </div>}
-                      {role !== 'customer' && <div className="flex justify-between items-center py-2.5">
+                      <div className="flex justify-between items-center py-2.5">
                         <span className="text-sm font-bold text-slate-500">Sale Price</span>
                         <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.sale_price)}</strong>
-                      </div>}
-                      <div className="flex justify-between items-center py-2.5">
-                        <span className="text-sm font-bold text-slate-500">Retail Price</span>
-                        <strong className="text-slate-800 font-extrabold text-base">{priceLabel(selectedProductDetails.retail_price)}</strong>
                       </div>
                       {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && selectedProductDetails.purchase_price !== undefined && selectedProductDetails.purchase_price !== null && (
                         <div className="flex justify-between items-center py-2.5">
