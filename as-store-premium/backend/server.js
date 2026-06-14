@@ -518,13 +518,17 @@ app.get('/api/reference-data', async (_req, res) => {
   res.json(await getReferenceData());
 });
 
-app.post('/api/reference-data/:type', authenticateToken, requireSuperAdmin, async (req, res) => {
+app.post('/api/reference-data/:type', authenticateToken, requireShopStaff, async (req, res) => {
   const tables = { categories: 'categories', colours: 'colours', brands: 'brands' };
   const table = tables[req.params.type];
   const name = String(req.body.name || '').trim();
   if (!table || !name) return res.status(400).json({ error: 'Choose a valid reference type and enter a name.' });
+  if (req.user.role !== 'superadmin' && req.params.type !== 'categories') {
+    return res.status(403).json({ error: 'Only the Super Admin can add brands or colours.' });
+  }
   const reference = await ensureReference(table, name);
-  await audit(req, `Added ${req.params.type}`, req.params.type, reference.id, reference.name);
+  const singularType = { categories: 'category', colours: 'colour', brands: 'brand' }[req.params.type];
+  await audit(req, `Added ${singularType}`, singularType, reference.id, reference.name);
   res.status(201).json(reference);
 });
 
@@ -1399,7 +1403,9 @@ app.post('/api/stock-transfer', authenticateToken, requireSuperAdmin, async (req
 });
 
 app.get('/api/catalog', async (req, res) => {
-  const { shopId, search = '', brand = '', min = 0, max = 9999999 } = req.query;
+  const { shopId, search = '', brand = '', category = '', colour = '', min = 0, max = 9999999 } = req.query;
+  const minPrice = String(min).trim() === '' || !Number.isFinite(Number(min)) ? 0 : Number(min);
+  const maxPrice = String(max).trim() === '' || !Number.isFinite(Number(max)) ? 9999999 : Number(max);
   const rows = await allRecords(`
     SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category,
       p.retail_price, p.description, p.colours,
@@ -1412,6 +1418,11 @@ app.get('/api/catalog', async (req, res) => {
       AND p.name IS NOT NULL
       AND (p.name ILIKE ? OR COALESCE(p.short_name, '') ILIKE ? OR COALESCE(p.full_model_list, '') ILIKE ? OR p.brand ILIKE ?)
       AND (? = '' OR p.brand = ?)
+      AND (? = '' OR LOWER(TRIM(p.category)) = LOWER(TRIM(?)))
+      AND (? = '' OR EXISTS (
+        SELECT 1 FROM UNNEST(p.colours) AS product_colour
+        WHERE LOWER(TRIM(product_colour)) = LOWER(TRIM(?))
+      ))
       AND p.retail_price BETWEEN ? AND ?
     GROUP BY p.id
     ORDER BY p.brand, COALESCE(p.short_name, p.name)
@@ -1423,8 +1434,12 @@ app.get('/api/catalog', async (req, res) => {
     `%${search}%`,
     brand,
     brand,
-    Number(min),
-    Number(max),
+    category,
+    category,
+    colour,
+    colour,
+    minPrice,
+    maxPrice,
   ]);
   res.json(rows);
 });

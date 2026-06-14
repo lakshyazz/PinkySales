@@ -645,7 +645,7 @@ function App() {
   });
   const [selectedShop, setSelectedShop] = useState('');
   const [forms, setForms] = useState(initialForms);
-  const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', category: '', colour: '', shopId: '', min: '', max: '' });
+  const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', category: '', colour: '', shopId: '' });
   const [stockFilters, setStockFilters] = useState({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
   const [shopkeeperStockSearch, setShopkeeperStockSearch] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
@@ -1116,11 +1116,24 @@ function App() {
 
   const addInventoryBatch = async () => {
     if (!requireShopSelection('Select a shop before adding an inventory batch')) return;
+    const optionalPrice = (value) => value === '' ? null : Number(value);
+    const purchasePrice = optionalPrice(forms.batch.purchase_price);
+    const wholesalePrice = optionalPrice(forms.batch.wholesale_price);
+    if ([purchasePrice, wholesalePrice].filter((price) => price !== null).some((price) => !Number.isFinite(price) || price < 0)) {
+      return showToast('Purchase and wholesale prices must be 0 or more');
+    }
     try {
       setSaving(true);
       await authedFetch('/inventory-batches', {
         method: 'POST',
-        body: JSON.stringify({ ...forms.batch, shop_id: shopId }),
+        body: JSON.stringify({
+          ...forms.batch,
+          shop_id: shopId,
+          purchase_price: purchasePrice,
+          wholesale_price: wholesalePrice,
+          official_price: null,
+          retail_price: null,
+        }),
       });
       setForms((prev) => ({ ...prev, batch: initialForms.batch }));
       showToast('Price batch added and stock updated');
@@ -1133,17 +1146,30 @@ function App() {
   };
 
   const addReferenceOption = async (type, name) => {
+    const referenceLabel = { categories: 'category', colours: 'colour', brands: 'brand' }[type] || type;
     const cleanName = String(name || '').trim();
-    if (!cleanName) return showToast(`Enter a new ${type.replace(/s$/, '')} name`);
+    if (!cleanName) return showToast(`Enter a new ${referenceLabel} name`);
     try {
       setSaving(true);
-      await authedFetch(`/reference-data/${type}`, { method: 'POST', body: JSON.stringify({ name: cleanName }) });
+      const createdReference = await authedFetch(`/reference-data/${type}`, { method: 'POST', body: JSON.stringify({ name: cleanName }) });
       const reference = await api('/reference-data');
       setData((prev) => ({ ...prev, reference: cleanReferenceData(reference) }));
+      const resolvedName = createdReference?.name || cleanName;
+      if (active === 'prices' && type === 'categories') {
+        setForms((prev) => ({ ...prev, product: { ...prev.product, category: resolvedName } }));
+      }
+      if (active === 'prices' && type === 'colours') {
+        setForms((prev) => {
+          const selected = prev.product.colours.split(',').map((item) => item.trim()).filter(Boolean);
+          return selected.some((item) => sameText(item, resolvedName))
+            ? prev
+            : { ...prev, product: { ...prev.product, colours: [...selected, resolvedName].join(', ') } };
+        });
+      }
       setNewReference({ type: '', name: '' });
-      showToast(`${cleanName} added`);
+      showToast(`${resolvedName} added`);
     } catch (error) {
-      showToast(error.message || `Unable to add ${type.replace(/s$/, '')}`);
+      showToast(error.message || `Unable to add ${referenceLabel}`);
     } finally {
       setSaving(false);
     }
@@ -2291,6 +2317,8 @@ function App() {
   const ownerInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => !batch.assigned_user_id));
   const assignedInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => Boolean(batch.assigned_user_id)));
   const myInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => String(batch.assigned_user_id) === String(session.id)));
+  const warehouseInventoryQuantity = sumBatchQuantity(data.batches.filter((batch) => String(batch.shop_id) === String(data.warehouse?.id)));
+  const accessibleInventoryQuantity = sumBatchQuantity(data.batches);
   const lowStockAlerts = combineLowStockAlerts(data.dashboard?.lowStock);
 
   if (!authReady) return <SkeletonPage type="dashboard" />;
@@ -2841,7 +2869,6 @@ function App() {
                     <Input label="Quantity received" type="number" className="md:col-span-1" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
                     <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />
                     <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />
-                    <Input label="Official price" type="number" className="md:col-span-1" value={forms.batch.official_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, official_price: v } })} />
                     <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
                     <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
                     <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />
@@ -2934,25 +2961,57 @@ function App() {
                     <p>Each stock category has its own page for filters, exports, inventory results, and purchase history.</p>
                   </div>
                   <div className="stock-hero-actions">
-                    <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Stock actions</button>
+                    <button className="primary" type="button" onClick={() => setNewReference({ type: 'categories', name: '' })}><Plus size={16} /> Add category</button>
+                    <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Manage stock</button>
                   </div>
                 </section>
 
+                {newReference.type === 'categories' && (
+                  <section className="stock-section-card category-create-panel">
+                    <div className="category-create-copy">
+                      <span className="category-icon"><Plus size={20} /></span>
+                      <div>
+                        <span className="stock-eyebrow">New category</span>
+                        <h2>Add a stock category</h2>
+                        <p>The category becomes available in product forms, stock filters, category pages, and the customer catalog.</p>
+                      </div>
+                    </div>
+                    <form
+                      className="category-create-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        addReferenceOption('categories', newReference.name);
+                      }}
+                    >
+                      <Input
+                        label="Category name"
+                        autoFocus
+                        maxLength={80}
+                        placeholder="Example: Charging Port"
+                        value={newReference.name}
+                        onChange={(name) => setNewReference({ type: 'categories', name })}
+                      />
+                      <button className="primary" type="submit" disabled={saving}><Plus size={16} /> {saving ? 'Adding...' : 'Add category'}</button>
+                      <button className="soft" type="button" disabled={saving} onClick={() => setNewReference({ type: '', name: '' })}>Cancel</button>
+                    </form>
+                  </section>
+                )}
+
                 <section className="inventory-ownership-summary">
                   <article className="ownership-summary-card total">
-                    <span>Total available stock</span>
-                    <strong>{ownerInventoryQuantity + assignedInventoryQuantity}</strong>
-                    <small>Main warehouse and shopkeeper inventory combined</small>
+                    <span>Stock available to you</span>
+                    <strong>{accessibleInventoryQuantity}</strong>
+                    <small>Warehouse, branch, and assigned inventory you can access</small>
                   </article>
                   <article className="ownership-summary-card owner">
                     <span>Main warehouse stock</span>
-                    <strong>{ownerInventoryQuantity}</strong>
-                    <small>Shared inventory available in this shop</small>
+                    <strong>{warehouseInventoryQuantity}</strong>
+                    <small>Inventory currently stored in the central warehouse</small>
                   </article>
                   <article className="ownership-summary-card mine">
-                    <span>{role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock'}</span>
+                    <span>{role === 'shopkeeper' ? 'My assigned stock' : 'Shopkeeper stock'}</span>
                     <strong>{role === 'shopkeeper' ? myInventoryQuantity : assignedInventoryQuantity}</strong>
-                    <small>{role === 'shopkeeper' ? 'Inventory added by you' : 'Inventory assigned to shopkeepers'}</small>
+                    <small>{role === 'shopkeeper' ? 'Inventory assigned directly to your login' : 'Inventory assigned directly to shopkeepers'}</small>
                   </article>
                 </section>
 
@@ -2962,7 +3021,7 @@ function App() {
                       <span className="stock-eyebrow">Category pages</span>
                       <h2>Choose a stock category</h2>
                     </div>
-                    <span className="category-result-count">{categoryStats.length} pages</span>
+                    <span className="category-result-count">{data.reference.categories.length} categories</span>
                   </div>
                   <div className="category-search-row">
                     <div className="searchbox">
@@ -2973,7 +3032,7 @@ function App() {
                         onChange={(event) => setCategorySearch(event.target.value)}
                       />
                     </div>
-                    <span>{visibleCategoryStats.length} categories shown</span>
+                    <span>{visibleCategoryStats.length} pages shown</span>
                   </div>
                   <div className="category-card-grid">
                     {visibleCategoryStats.map((category) => (
@@ -3591,7 +3650,7 @@ function App() {
                     <p className="product-description" title={product.description || 'No description provided.'}>
                       {product.description || 'No description provided.'}
                     </p>
-                    <strong>{priceLabel(product.sale_price || product.official_price)}</strong>
+                    <strong>{priceLabel(product.retail_price)}</strong>
                     <small className="mb-2">{product.available_shops || 'Currently unavailable'}</small>
                     <button className="soft w-full !min-h-[38px] text-xs font-bold mt-2" type="button" onClick={() => setSelectedProductDetails(product)}>View details</button>
                   </>

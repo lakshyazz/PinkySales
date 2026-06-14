@@ -3177,6 +3177,49 @@ button:disabled {
   gap: 14px;
 }
 
+.category-create-panel {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  border-color: rgba(20, 184, 166, 0.28);
+  background: linear-gradient(145deg, rgba(240, 253, 250, 0.96), rgba(255, 255, 255, 0.96));
+}
+
+.category-create-copy {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.category-create-copy h2 {
+  margin: 3px 0 5px;
+}
+
+.category-create-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.category-create-form {
+  min-width: min(100%, 520px);
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.category-create-form label {
+  margin: 0;
+}
+
+.category-create-form button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
 .category-search-row .searchbox {
   width: min(520px, 100%);
   flex: 1;
@@ -3755,9 +3798,15 @@ button:disabled {
   .stock-hero-actions,
   .stock-overview-actions,
   .category-model-toolbar,
-  .category-search-row {
+  .category-search-row,
+  .category-create-panel {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .category-create-form {
+    min-width: 0;
+    grid-template-columns: 1fr;
   }
 
   .shopkeeper-stock-search {
