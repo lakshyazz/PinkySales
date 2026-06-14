@@ -3962,13 +3962,12 @@ function App() {
                 animate={{ x: 0 }}
                 exit={{ x: '100%' }}
                 transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                className="transfer-drawer" 
+                className="transfer-drawer product-details-drawer"
                 role="dialog" 
                 aria-modal="true" 
                 aria-labelledby="product-details-title"
-                style={{ width: 'min(500px, 100%)', overflowY: 'auto' }}
               >
-                <div className="drawer-head flex items-start gap-4 pb-5 border-b border-slate-100 mb-6">
+                <div className="drawer-head product-details-head flex items-start gap-4 pb-5 border-b border-slate-100 mb-6">
                   <div className="w-12 h-12 rounded-2xl bg-cyan-500/10 text-cyan-600 flex items-center justify-center shrink-0">
                     <Smartphone className="w-6 h-6" />
                   </div>
@@ -3980,7 +3979,7 @@ function App() {
                       {productName(selectedProductDetails)}
                     </h2>
                   </div>
-                  <button type="button" className="icon" onClick={() => setSelectedProductDetails(null)}>
+                  <button type="button" className="icon product-details-close" aria-label="Close product details" onClick={() => setSelectedProductDetails(null)}>
                     <X size={20} />
                   </button>
                 </div>
@@ -3988,7 +3987,7 @@ function App() {
                 <div className="space-y-6">
                   <div>
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider block mb-2">Compatible Models</span>
-                    <div className="p-4 bg-slate-50 border border-slate-100 rounded-xl text-slate-700 text-sm font-semibold whitespace-pre-wrap leading-relaxed">
+                    <div className="product-compatible-copy p-4 bg-slate-50 border border-slate-100 rounded-xl text-slate-700 text-sm font-semibold whitespace-pre-wrap leading-relaxed">
                       {fullModelList(selectedProductDetails)}
                     </div>
                   </div>
