@@ -1944,6 +1944,24 @@ button:disabled {
   text-transform: uppercase;
 }
 
+.sale-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.sale-delete-action {
+  color: #be123c !important;
+  border-color: rgba(244, 63, 94, 0.25) !important;
+  background: rgba(255, 241, 242, 0.76) !important;
+}
+
+.sale-delete-action:hover {
+  border-color: rgba(225, 29, 72, 0.48) !important;
+  background: #fff1f2 !important;
+}
+
 .compact-price-grid {
   grid-template-columns: 1fr;
   gap: 10px;

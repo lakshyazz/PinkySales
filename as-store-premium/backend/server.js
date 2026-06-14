@@ -1121,6 +1121,54 @@ app.post('/api/sales', authenticateToken, requireShopStaff, async (req, res) => 
   }
 });
 
+app.delete('/api/sales/:id', authenticateToken, requireShopStaff, async (req, res) => {
+  try {
+    const saleId = Number(req.params.id);
+    if (!Number.isInteger(saleId) || saleId <= 0) return res.status(400).json({ error: 'Choose a valid sale.' });
+
+    const result = await runTransaction(async (tx) => {
+      const sale = await tx.getRecord(
+        `SELECT sa.*, p.short_name, p.name AS product_name
+         FROM sales sa
+         JOIN products p ON p.id = sa.product_id
+         WHERE sa.id = ?`,
+        [saleId]
+      );
+      if (!sale) {
+        const error = new Error('Sale not found.');
+        error.status = 404;
+        throw error;
+      }
+      if (isShopStaffRole(req.user.role) && (Number(sale.shop_id) !== Number(req.user.shop_id) || Number(sale.created_by) !== Number(req.user.id))) {
+        const error = new Error('You can only delete sales created by your login.');
+        error.status = 403;
+        throw error;
+      }
+
+      const allocations = await tx.allRecords(
+        'SELECT batch_id, quantity FROM sale_batch_allocations WHERE sale_id = ?',
+        [saleId]
+      );
+      for (const allocation of allocations) {
+        await tx.runQuery(
+          'UPDATE inventory_batches SET quantity_remaining = quantity_remaining + ? WHERE id = ?',
+          [allocation.quantity, allocation.batch_id]
+        );
+      }
+      await tx.runQuery('DELETE FROM payments WHERE sale_id = ?', [saleId]);
+      await tx.runQuery('DELETE FROM sale_batch_allocations WHERE sale_id = ?', [saleId]);
+      await tx.runQuery('DELETE FROM sales WHERE id = ?', [saleId]);
+      await syncStockFromBatches(tx, sale.shop_id, sale.product_id);
+      return sale;
+    });
+
+    await audit(req, 'Deleted sale and restored stock', 'sale', saleId, `${result.short_name || result.product_name}, quantity ${result.quantity}`);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message || 'Unable to delete this sale.' });
+  }
+});
+
 app.get('/api/stock-requests', authenticateToken, requireShopStaff, async (req, res) => {
   try {
     const shopId = isShopStaffRole(req.user.role) ? req.user.shop_id : scopeShopId(req);

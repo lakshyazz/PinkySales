@@ -1365,6 +1365,27 @@ function App() {
     });
   };
 
+  const deleteSale = (sale) => {
+    requestConfirmation({
+      title: `Delete sale for ${productName(sale)}?`,
+      message: `This will delete the sale, remove its payments, and restore ${sale.quantity || 1} item(s) to stock. You can then create the corrected sale.`,
+      confirmLabel: 'Delete sale',
+      onConfirm: async () => {
+        try {
+          setSaving(true);
+          await authedFetch(`/sales/${sale.id}`, { method: 'DELETE' });
+          showToast('Sale deleted and stock restored');
+          await loadTab('sales', shopId);
+          await loadTab('dashboard', shopId);
+        } catch (error) {
+          showToast(error.message || 'Unable to delete this sale');
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
+  };
+
   const submitSale = async (reloadTab = active) => {
     if (!requireShopSelection('Select a shop before creating a sale')) return;
     
@@ -3369,7 +3390,12 @@ function App() {
                         <span>{currency(sale.paid_amount)}</span>
                         <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
                           <strong className={`status-badge ${sale.pending_amount > 0 ? 'pending' : 'paid'}`}>{currency(sale.pending_amount)}</strong>
-                          <button className="soft" onClick={() => printTaxInvoicePDF(sale)}><ReceiptText size={16} /> Invoice</button>
+                          <span className="sale-row-actions">
+                            <button className="soft" type="button" onClick={() => printTaxInvoicePDF(sale)}><ReceiptText size={16} /> Invoice</button>
+                            {(role === 'superadmin' || Number(sale.created_by) === Number(session?.id)) && (
+                              <button className="soft sale-delete-action" type="button" onClick={() => deleteSale(sale)}><Trash2 size={16} /> Delete</button>
+                            )}
+                          </span>
                         </span>
                       </motion.div>
                     ))}
