@@ -27,6 +27,26 @@ app.use((_req, res, next) => {
 });
 app.use(express.json({ limit: '256kb' }));
 
+const wrapRouteHandler = (handler) => {
+  if (typeof handler !== 'function' || handler.length === 4) return handler;
+  return (req, res, next) => {
+    try {
+      const result = handler(req, res, next);
+      return result && typeof result.catch === 'function' ? result.catch(next) : result;
+    } catch (error) {
+      return next(error);
+    }
+  };
+};
+
+['get', 'post', 'put', 'patch', 'delete'].forEach((method) => {
+  const original = app[method].bind(app);
+  app[method] = (...args) => {
+    if (args.length <= 1) return original(...args);
+    return original(args[0], ...args.slice(1).map(wrapRouteHandler));
+  };
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
@@ -909,7 +929,51 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       pagination,
       totalKey: 'totalStockItems',
     });
-    res.json(rows);
+    if (req.query.includeSummary === 'true') {
+      const summaryRows = await allRecords(`
+        SELECT category,
+          COUNT(*) AS products,
+          COALESCE(SUM(quantity), 0) AS quantity,
+          COALESCE(SUM(owner_quantity), 0) AS owner_quantity,
+          COALESCE(SUM(shopkeeper_quantity), 0) AS shopkeeper_quantity,
+          COALESCE(SUM(my_quantity), 0) AS my_quantity,
+          COALESCE(SUM(CASE WHEN location_type = 'warehouse' THEN quantity ELSE 0 END), 0) AS warehouse_quantity
+        FROM (
+          SELECT st.id, sh.location_type, COALESCE(NULLIF(TRIM(p.category), ''), 'Uncategorized') AS category,
+            ${stockQuantitySql} AS quantity,
+            COALESCE(SUM(CASE WHEN ib.assigned_user_id IS NULL THEN ib.quantity_remaining ELSE 0 END), 0) AS owner_quantity,
+            COALESCE(SUM(CASE WHEN ib.assigned_user_id IS NOT NULL THEN ib.quantity_remaining ELSE 0 END), 0) AS shopkeeper_quantity,
+            COALESCE(SUM(CASE WHEN ib.assigned_user_id = ${Number(req.user.id)} THEN ib.quantity_remaining ELSE 0 END), 0) AS my_quantity
+          ${baseSql}
+        ) stock_summary
+        GROUP BY category
+        ORDER BY category
+      `, params);
+      const totals = summaryRows.reduce((acc, row) => ({
+        products: acc.products + Number(row.products || 0),
+        quantity: acc.quantity + Number(row.quantity || 0),
+        owner_quantity: acc.owner_quantity + Number(row.owner_quantity || 0),
+        shopkeeper_quantity: acc.shopkeeper_quantity + Number(row.shopkeeper_quantity || 0),
+        my_quantity: acc.my_quantity + Number(row.my_quantity || 0),
+        warehouse_quantity: acc.warehouse_quantity + Number(row.warehouse_quantity || 0),
+      }), {
+        products: 0,
+        quantity: 0,
+        owner_quantity: 0,
+        shopkeeper_quantity: 0,
+        my_quantity: 0,
+        warehouse_quantity: 0,
+      });
+      const response = Array.isArray(rows) ? { data: rows } : rows;
+      return res.json({
+        ...response,
+        summary: {
+          categories: summaryRows,
+          totals,
+        },
+      });
+    }
+    return res.json(rows);
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message || 'Unable to load stock.' });
   }
@@ -1818,6 +1882,32 @@ app.delete('/api/reports/audit', authenticateToken, requireSuperAdmin, async (re
   } catch (error) {
     res.status(500).json({ error: 'Failed to clear audit logs.' });
   }
+});
+
+const isTransientDatabaseError = (error) => {
+  const message = `${error?.message || ''} ${error?.cause?.message || ''}`;
+  return /connection terminated|connection timeout|timeout|ECONNRESET|ETIMEDOUT/i.test(message)
+    || ['08003', '08006', '57P01', '53300'].includes(String(error?.code || ''));
+};
+
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+
+  const requestedStatus = Number(error?.status || error?.statusCode || 0);
+  const databaseUnavailable = isTransientDatabaseError(error);
+  const status = requestedStatus >= 400 && requestedStatus < 600
+    ? requestedStatus
+    : databaseUnavailable
+      ? 503
+      : 500;
+  const message = databaseUnavailable
+    ? 'Database connection timed out. Please retry.'
+    : status >= 500
+      ? 'Unable to complete this request right now.'
+      : error?.message || 'Request failed.';
+
+  console.error(`[Server] ${req.method} ${req.originalUrl} failed:`, error);
+  return res.status(status).json({ error: message });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

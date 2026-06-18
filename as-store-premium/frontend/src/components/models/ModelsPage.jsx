@@ -1,6 +1,7 @@
+import React from 'react';
 import { Smartphone } from 'lucide-react';
-import ProductPagination from '../shared/ProductPagination';
-import SearchFilter from '../shared/SearchFilter';
+import Pagination from '../ui/Pagination';
+import SearchInput from '../ui/SearchInput';
 
 export default function ModelsPage({
   items,
@@ -19,7 +20,7 @@ export default function ModelsPage({
   return (
     <section className="space">
       <div className="catalog-toolbar panel models-toolbar">
-        <SearchFilter
+        <SearchInput
           placeholder="Search model, brand, category, or description"
           value={search}
           onChange={onSearchChange}
@@ -67,7 +68,7 @@ export default function ModelsPage({
         {!items.length && <Empty title="No matching models found" />}
       </div>
 
-      {role !== 'customer' && <ProductPagination meta={pager} loading={loading} onPageChange={onPageChange} />}
+      {role !== 'customer' && <Pagination meta={pager} loading={loading} onPageChange={onPageChange} />}
     </section>
   );
 }

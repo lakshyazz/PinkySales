@@ -1,6 +1,7 @@
+import React from 'react';
 import { Download, IndianRupee, Trash2 } from 'lucide-react';
-import ProductPagination from '../shared/ProductPagination';
-import SearchFilter from '../shared/SearchFilter';
+import Pagination from '../ui/Pagination';
+import SearchInput from '../ui/SearchInput';
 
 export default function PricesPage({
   role,
@@ -98,7 +99,7 @@ export default function PricesPage({
       </section>
 
       <div className="catalog-toolbar panel models-toolbar">
-        <SearchFilter
+        <SearchInput
           placeholder="Search model, brand, category, compatible models, colour, or price"
           value={search}
           onChange={onSearchChange}
@@ -139,7 +140,7 @@ export default function PricesPage({
         </>
       )} />
 
-      <ProductPagination meta={pager} loading={loading} onPageChange={onPageChange} />
+      <Pagination meta={pager} loading={loading} onPageChange={onPageChange} />
     </section>
   );
 }

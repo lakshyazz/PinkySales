@@ -36,7 +36,9 @@ import {
 } from 'lucide-react';
 import ModelsPage from './components/models/ModelsPage';
 import PricesPage from './components/prices/PricesPage';
-import ProductPagination from './components/shared/ProductPagination';
+import StockPage from './components/stock/StockPage';
+import Pagination from './components/ui/Pagination';
+import SearchInput from './components/ui/SearchInput';
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL;
 const productionApiBase = configuredApiBase?.startsWith('http')
@@ -246,6 +248,15 @@ const navByRole = {
 };
 navByRole.admin = navByRole.shopkeeper;
 navByRole.user = navByRole.customer;
+
+const validPageIds = new Set(Object.values(navByRole).flatMap((items) => items.map(([id]) => id)));
+const defaultPageForRole = (role) => (role === 'customer' || role === 'user' ? 'catalog' : 'dashboard');
+const pageFromPath = () => {
+  if (typeof window === 'undefined') return '';
+  const page = decodeURIComponent(window.location.pathname).replace(/^\/+|\/+$/g, '');
+  return validPageIds.has(page) ? page : '';
+};
+const initialPageForSession = (session) => pageFromPath() || defaultPageForRole(session?.role);
 
 const handleFormKeyDown = (e) => {
   if (e.key === 'Enter') {
@@ -655,7 +666,7 @@ function PageWrapper({ children, activeKey }) {
 function App() {
   const [session, setSession] = useState(readStoredSession);
   const [authReady, setAuthReady] = useState(() => !session);
-  const [active, setActive] = useState(session?.role === 'customer' ? 'catalog' : 'dashboard');
+  const [active, setActive] = useState(() => initialPageForSession(session));
   const [open, setOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toast, setToast] = useState(null);
@@ -681,6 +692,18 @@ function App() {
     reports: null,
     catalog: [],
     productResults: [],
+    stockSummary: {
+      loaded: false,
+      categories: [],
+      totals: {
+        products: 0,
+        quantity: 0,
+        owner_quantity: 0,
+        shopkeeper_quantity: 0,
+        my_quantity: 0,
+        warehouse_quantity: 0,
+      },
+    },
     reference: { categories: [], colours: [], brands: [] },
     priceVisibility: {
       show_official_price_shopkeeper: true,
@@ -736,6 +759,7 @@ function App() {
     reports: false,
   });
   const globalSearchBlurRef = useRef(null);
+  const stockLoadSequenceRef = useRef(0);
 
   // Reset to Light Mode on mount
   useEffect(() => {
@@ -760,7 +784,7 @@ function App() {
         if (error?.status === 401 || error?.status === 403) {
           localStorage.removeItem('session');
           setSession(null);
-          setActive('dashboard');
+          setActivePage('dashboard', { replace: true });
         } else {
           setLoadError(error?.message || 'Unable to verify the saved session.');
         }
@@ -794,6 +818,18 @@ function App() {
   const needsSpecificShop = role === 'superadmin' && !shopId;
   const shopCountDependency = ['stock', 'stock-categories'].includes(active) ? data.shops.length : 0;
   const activeProductSearch = active === 'prices' ? deferredPriceSearch : active === 'models' ? deferredModelSearch : '';
+
+  const syncActivePath = (page, mode = 'push') => {
+    if (typeof window === 'undefined' || !validPageIds.has(page)) return;
+    const nextPath = `/${page}`;
+    if (window.location.pathname === nextPath) return;
+    window.history[mode === 'replace' ? 'replaceState' : 'pushState']({}, '', nextPath);
+  };
+  const setActivePage = (page, options = {}) => {
+    const target = validPageIds.has(page) ? page : defaultPageForRole(role);
+    setActive(target);
+    syncActivePath(target, options.replace ? 'replace' : 'push');
+  };
 
   const authedFetch = (path, options = {}) => api(path, options, token);
   const showToast = (message, tone = inferToastTone(message)) => {
@@ -830,6 +866,23 @@ function App() {
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
   }, [saving]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const routedPage = pageFromPath();
+      if (routedPage) setActive(routedPage);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    const allowed = nav.some(([id]) => id === active);
+    const target = allowed ? active : defaultPageForRole(role);
+    if (!allowed) setActive(target);
+    syncActivePath(target, 'replace');
+  }, [active, role, session?.token]);
 
   useEffect(() => {
     setSearchHydrated(false);
@@ -872,9 +925,9 @@ function App() {
       setPriceSearch(nextQuery);
       if (role === 'customer') {
         setCatalogFilters((prev) => ({ ...prev, search: nextQuery }));
-        setActive('catalog');
+        setActivePage('catalog');
       } else {
-        setActive('models');
+        setActivePage('models');
       }
       setSelectedProductDetails(result.item);
       return;
@@ -883,34 +936,34 @@ function App() {
     if (result.kind === 'brand') {
       setStockFilters((prev) => ({ ...prev, brand: result.title, search: '' }));
       setCatalogFilters((prev) => ({ ...prev, brand: result.title, search: '' }));
-      setActive(role === 'customer' ? 'catalog' : 'stock-categories');
+      setActivePage(role === 'customer' ? 'catalog' : 'stock-categories');
       if (role !== 'customer') setStockCategoryPage('__all__');
       return;
     }
 
     if (result.kind === 'customer') {
       if (role === 'superadmin' && result.item?.shop_id) setSelectedShop(String(result.item.shop_id));
-      setActive('customers');
+      setActivePage('customers');
       return;
     }
 
     if (result.kind === 'sale') {
       if (role === 'superadmin' && result.item?.shop_id) setSelectedShop(String(result.item.shop_id));
       setSalesFilters({ search: result.title, date: '' });
-      setActive('sales');
+      setActivePage('sales');
       return;
     }
 
     if (result.kind === 'shop') {
       if (role === 'superadmin') setSelectedShop(String(result.item.id));
-      setActive('dashboard');
+      setActivePage('dashboard');
     }
   };
   const openStockCategoriesHub = () => {
     setStockCategoryPage(null);
     setCategoryFiltersOpen(false);
     setStockFilters({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
-    setActive('stock-categories');
+    setActivePage('stock-categories');
   };
   const openStockCategoryPage = (categoryName = '') => {
     setCategoryFiltersOpen(false);
@@ -981,11 +1034,13 @@ function App() {
     search = '',
   } = {}) => {
     if (!token || role === 'customer') return;
+    const requestId = ++stockLoadSequenceRef.current;
     setPageLoading((prev) => ({ ...prev, stock: true, batches: true }));
     try {
       const stockParams = applyStockQueryParams(scopedParams(currentShop), filters, search);
       stockParams.set('page', String(stockPage));
       stockParams.set('limit', String(stockPager.limit));
+      stockParams.set('includeSummary', 'true');
       const batchParams = applyStockQueryParams(scopedParams(currentShop), filters, search);
       batchParams.set('page', String(batchPage));
       batchParams.set('limit', String(batchPager.limit));
@@ -994,15 +1049,27 @@ function App() {
         authedFetch(`/inventory-batches?${batchParams.toString()}`),
         role === 'superadmin' && !data.shopkeepers.length ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
       ]);
+      if (requestId !== stockLoadSequenceRef.current) return;
       const stockRows = getPaginatedRows(stockResponse);
       const batchRows = getPaginatedRows(batchResponse);
-      setData((prev) => ({ ...prev, stock: stockRows, batches: batchRows, shopkeepers }));
+      setData((prev) => ({
+        ...prev,
+        stock: stockRows,
+        batches: batchRows,
+        shopkeepers,
+        stockSummary: stockResponse?.summary
+          ? { ...stockResponse.summary, loaded: true }
+          : prev.stockSummary,
+      }));
       updatePagerFromResponse(setStockPager, stockResponse, stockPage, stockRows, ['totalStockItems']);
       updatePagerFromResponse(setBatchPager, batchResponse, batchPage, batchRows, ['totalBatches']);
     } catch (error) {
+      if (requestId !== stockLoadSequenceRef.current) return;
       handleLoadError(error, 'Unable to load stock right now.');
     } finally {
-      setPageLoading((prev) => ({ ...prev, stock: false, batches: false }));
+      if (requestId === stockLoadSequenceRef.current) {
+        setPageLoading((prev) => ({ ...prev, stock: false, batches: false }));
+      }
     }
   };
 
@@ -1437,7 +1504,7 @@ function App() {
     localStorage.setItem('session', JSON.stringify(normalizedSession));
     setSession(normalizedSession);
     setAuthReady(true);
-    setActive(normalizedSession.role === 'customer' ? 'catalog' : 'dashboard');
+    setActivePage(defaultPageForRole(normalizedSession.role), { replace: true });
   };
 
   const logout = () => {
@@ -1445,7 +1512,7 @@ function App() {
     setSession(null);
     setAuthReady(true);
     setSelectedShop('');
-    setActive('dashboard');
+    setActivePage('dashboard', { replace: true });
   };
 
   const submitShopkeeper = async () => {
@@ -2661,20 +2728,27 @@ function App() {
   });
   const shopkeeperStockItems = stockWithOwnership;
   const visibleStock = stockWithOwnership;
+  const stockSummaryLoaded = Boolean(data.stockSummary?.loaded);
+  const stockSummaryTotals = data.stockSummary?.totals || {};
+  const stockCategorySummaryMap = new Map((data.stockSummary?.categories || []).map((category) => [
+    normalizedText(category.category),
+    category,
+  ]));
   const categoryStats = [
     {
       name: '',
       label: 'All categories',
-      products: combinedStock.length,
-      quantity: combinedStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+      products: stockSummaryLoaded ? Number(stockSummaryTotals.products || 0) : combinedStock.length,
+      quantity: stockSummaryLoaded ? Number(stockSummaryTotals.quantity || 0) : combinedStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
     },
     ...data.reference.categories.map((category) => {
       const categoryStock = combinedStock.filter((item) => sameText(item.category, category.name));
+      const summary = stockCategorySummaryMap.get(normalizedText(category.name));
       return {
         name: category.name,
         label: category.name,
-        products: categoryStock.length,
-        quantity: categoryStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
+        products: stockSummaryLoaded ? Number(summary?.products || 0) : categoryStock.length,
+        quantity: stockSummaryLoaded ? Number(summary?.quantity || 0) : categoryStock.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
       };
     }),
   ];
@@ -2685,13 +2759,14 @@ function App() {
     ? categoryStats.find((category) => stockCategoryPage === '__all__' ? !category.name : sameText(category.name, stockCategoryPage))
     : null;
   const activeCategoryFilterCount = ['search', 'brand', 'colour', 'status', 'ownership'].filter((key) => Boolean(stockFilters[key])).length;
-  const ownerInventoryQuantity = stockWithOwnership.reduce((sum, item) => sum + Number(item.owner_quantity || 0), 0);
-  const assignedInventoryQuantity = stockWithOwnership.reduce((sum, item) => sum + Number(item.shopkeeper_quantity || 0), 0);
-  const myInventoryQuantity = stockWithOwnership.reduce((sum, item) => sum + Number(item.my_quantity || 0), 0);
+  const ownerInventoryQuantity = stockSummaryLoaded ? Number(stockSummaryTotals.owner_quantity || 0) : stockWithOwnership.reduce((sum, item) => sum + Number(item.owner_quantity || 0), 0);
+  const assignedInventoryQuantity = stockSummaryLoaded ? Number(stockSummaryTotals.shopkeeper_quantity || 0) : stockWithOwnership.reduce((sum, item) => sum + Number(item.shopkeeper_quantity || 0), 0);
+  const myInventoryQuantity = stockSummaryLoaded ? Number(stockSummaryTotals.my_quantity || 0) : stockWithOwnership.reduce((sum, item) => sum + Number(item.my_quantity || 0), 0);
   const warehouseInventoryQuantity = stockWithOwnership
     .filter((item) => item.location_type === 'warehouse' || String(item.shop_id) === String(data.warehouse?.id))
     .reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  const accessibleInventoryQuantity = stockWithOwnership.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const stableWarehouseInventoryQuantity = stockSummaryLoaded ? Number(stockSummaryTotals.warehouse_quantity || 0) : warehouseInventoryQuantity;
+  const accessibleInventoryQuantity = stockSummaryLoaded ? Number(stockSummaryTotals.quantity || 0) : stockWithOwnership.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   const lowStockAlerts = combineLowStockAlerts(data.dashboard?.lowStock);
   const dashboardAvailability = data.dashboard?.modelAvailability || [];
   const dashboardWarehouseStock = dashboardAvailability.reduce((sum, item) => sum + Number(item.warehouse_stock || 0), 0);
@@ -2794,7 +2869,7 @@ function App() {
                 key={id} 
                 className={`relative ${isActive ? 'active' : ''}`} 
                 title={label}
-                onClick={() => { if (id === 'stock-categories') openStockCategoriesHub(); else setActive(id); setOpen(false); }}
+                onClick={() => { if (id === 'stock-categories') openStockCategoriesHub(); else setActivePage(id); setOpen(false); }}
               >
                 {isActive && (
                   <motion.div 
@@ -3245,123 +3320,39 @@ function App() {
 
           {active === 'stock' && (
             <PageWrapper activeKey="stock" key="stock">
-              <section className="space">
-                <section className="stock-workspace-intro">
-                  <div className="stock-workspace-copy">
-                    <span className="stock-eyebrow">Inventory workspace</span>
-                    <h2>{role === 'shopkeeper' ? 'Manage your stock without mixing it with main warehouse stock' : 'Keep daily stock work simple'}</h2>
-                    <p>{role === 'shopkeeper'
-                      ? 'Main warehouse stock remains available for sales. Quantity updates here are saved as your personal shopkeeper inventory.'
-                      : 'Update quantities, receive purchase batches, and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.'}</p>
-                  </div>
-                  <button className="stock-category-link" type="button" onClick={openStockCategoriesHub}>
-                    <span className="stock-category-link-icon"><LayoutGrid size={22} /></span>
-                    <span><b>Open Stock Categories</b><small>Browse, filter, and export inventory</small></span>
-                  </button>
-                </section>
-                {role === 'shopkeeper' && (
-                  <section className="inventory-ownership-summary compact-summary">
-                    <article className="ownership-summary-card owner">
-                      <span>Main warehouse stock available</span>
-                      <strong>{ownerInventoryQuantity}</strong>
-                      <small>Shared stock you can sell</small>
-                    </article>
-                    <article className="ownership-summary-card mine">
-                      <span>My shopkeeper stock</span>
-                      <strong>{myInventoryQuantity}</strong>
-                      <small>Stock added and controlled by you</small>
-                    </article>
-                  </section>
-                )}
-                <FormPanel title={role === 'shopkeeper' ? 'Set my stock quantity' : 'Set available stock quantity'} action="Save quantity" onSubmit={updateStock}>
-                  <Select label="Product" className="md:col-span-3" value={forms.stock.product_id} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, product_id: v } })} options={data.products.map((p) => [p.id, `${productName(p)} · ${priceLabel(p.sale_price)}`])} />
-                  <Input label={role === 'shopkeeper' ? 'My quantity' : 'Available quantity'} type="number" className="md:col-span-1" value={forms.stock.quantity} onChange={(v) => setForms({ ...forms, stock: { ...forms.stock, quantity: v } })} />
-                </FormPanel>
-                {role === 'superadmin' && (
-                  <FormPanel title="Add purchase-price batch" action={saving ? 'Saving...' : 'Add batch'} onSubmit={addInventoryBatch} disabled={saving || needsSpecificShop}>
-                    <Select label="Product" className="md:col-span-3" value={forms.batch.product_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, product_id: v } })} options={data.products.map((p) => [p.id, productName(p)])} />
-                    <Input label="Quantity received" type="number" className="md:col-span-1" value={forms.batch.quantity} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, quantity: v } })} />
-                    <Input label="Purchase price" type="number" className="md:col-span-1" value={forms.batch.purchase_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, purchase_price: v } })} />
-                    <Input label="Wholesale price" type="number" className="md:col-span-1" value={forms.batch.wholesale_price} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, wholesale_price: v } })} />
-                    <Select label="Colour" className="md:col-span-1" value={forms.batch.colour} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, colour: v } })} options={data.reference.colours.map((item) => [item.name, item.name])} />
-                    <Input label="Received date" type="date" className="md:col-span-1" value={forms.batch.received_date} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, received_date: v } })} />
-                    <Select label="Assign to shopkeeper (optional)" className="md:col-span-2" value={forms.batch.assigned_user_id} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, assigned_user_id: v } })} options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} />
-                    <Input label="Batch notes" className="md:col-span-4" value={forms.batch.notes} onChange={(v) => setForms({ ...forms, batch: { ...forms.batch, notes: v } })} />
-                  </FormPanel>
-                )}
-                {role === 'superadmin' && (
-                  <section className="panel transfer-launch">
-                    <div>
-                      <h2>Branch stock transfer</h2>
-                      <p>Move available inventory between branches without leaving the stock workspace.</p>
-                    </div>
-                    <button className="primary" type="button" onClick={() => setTransferDrawerOpen(true)}><Send size={17} /> Transfer stock</button>
-                  </section>
-                )}
-                <div className="stock-section-heading">
-                  <div>
-                    <span className="stock-eyebrow">Live inventory</span>
-                    <h2>Current stock overview</h2>
-                    {role === 'shopkeeper' && <p>{shopkeeperStockItems.length} matching models</p>}
-                  </div>
-                  <div className="stock-overview-actions">
-                    <div className="searchbox shopkeeper-stock-search">
-                      <Search size={18} />
-                      <input
-                        aria-label="Search models in stock"
-                        placeholder="Search product, model, brand, or shop"
-                        value={role === 'shopkeeper' ? shopkeeperStockSearch : stockFilters.search}
-                        onChange={(event) => {
-                          if (role === 'shopkeeper') setShopkeeperStockSearch(event.target.value);
-                          else setStockFilters({ ...stockFilters, search: event.target.value });
-                        }}
-                      />
-                    </div>
-                    <button className="soft" type="button" onClick={openStockCategoriesHub}><LayoutGrid size={16} /> View categories</button>
-                  </div>
-                </div>
-                {(role === 'shopkeeper' ? shopkeeperStockItems : stockWithOwnership).length ? (
-                  <div className="table panel inventory-stock-table">
-                    {(role === 'shopkeeper' ? shopkeeperStockItems : stockWithOwnership).map((item) => (
-                      <div className="row" key={item.id}>
-                        <div className="inventory-primary">
-                          <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0">
-                            <Smartphone size={18} />
-                          </div>
-                          <span>
-                            <b>{productName(item)}</b>
-                            <small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small>
-                            {role === 'shopkeeper' && (
-                              <span className="stock-compatible-models">
-                                <small title={fullModelList(item)}><b>Compatible:</b> {fullModelList(item) || 'No compatible models listed'}</small>
-                                {fullModelList(item) && <button type="button" onClick={() => setSelectedProductDetails(item)}>View all</button>}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                        <span className="inventory-metric">
-                          <small>Category</small>
-                          <span className="status-badge stock-ok">{item.category || 'Mobile'}</span>
-                        </span>
-                        <span className="inventory-metric">
-                          <small>Price</small>
-                          <strong>{priceLabel(item.sale_price)}</strong>
-                        </span>
-                        <div className="inventory-balance">
-                          <small>Total available: <b>{item.quantity} pcs</b></small>
-                          <div className="inventory-owner-badges">
-                            <span className="owner-stock-chip">Main warehouse <b>{item.owner_quantity}</b></span>
-                            <span className="my-stock-chip">{role === 'shopkeeper' ? 'My stock' : 'Shopkeepers'} <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b></span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <Empty title={role === 'shopkeeper' && shopkeeperStockSearch.trim() ? 'No models match your search' : 'No stock records found'} />
-                )}
-                <ProductPagination meta={stockPager} loading={pageLoading.stock} onPageChange={(page) => setStockPager((prev) => ({ ...prev, page }))} />
-              </section>
+              <StockPage
+                role={role}
+                shopId={shopId}
+                session={session}
+                forms={forms}
+                setForms={setForms}
+                data={data}
+                saving={saving}
+                needsSpecificShop={needsSpecificShop}
+                ownerInventoryQuantity={ownerInventoryQuantity}
+                myInventoryQuantity={myInventoryQuantity}
+                updateStock={updateStock}
+                addInventoryBatch={addInventoryBatch}
+                setTransferDrawerOpen={setTransferDrawerOpen}
+                openStockCategoriesHub={openStockCategoriesHub}
+                shopkeeperStockSearch={shopkeeperStockSearch}
+                setShopkeeperStockSearch={setShopkeeperStockSearch}
+                stockFilters={stockFilters}
+                setStockFilters={setStockFilters}
+                shopkeeperStockItems={shopkeeperStockItems}
+                stockWithOwnership={stockWithOwnership}
+                stockPager={stockPager}
+                pageLoading={pageLoading}
+                setStockPager={setStockPager}
+                setSelectedProductDetails={setSelectedProductDetails}
+                productName={productName}
+                fullModelList={fullModelList}
+                priceLabel={priceLabel}
+                FormPanel={FormPanel}
+                Input={Input}
+                Select={Select}
+                Empty={Empty}
+              />
             </PageWrapper>
           )}
 
@@ -3378,7 +3369,7 @@ function App() {
                   </div>
                   <div className="stock-hero-actions">
                     <button className="primary" type="button" onClick={() => setNewReference({ type: 'categories', name: '' })}><Plus size={16} /> Add category</button>
-                    <button className="soft" type="button" onClick={() => setActive('stock')}><Package size={16} /> Manage stock</button>
+                    <button className="soft" type="button" onClick={() => setActivePage('stock')}><Package size={16} /> Manage stock</button>
                   </div>
                 </section>
 
@@ -3421,7 +3412,7 @@ function App() {
                   </article>
                   <article className="ownership-summary-card owner">
                     <span>Main warehouse stock</span>
-                    <strong>{warehouseInventoryQuantity}</strong>
+                    <strong>{stableWarehouseInventoryQuantity}</strong>
                     <small>Inventory currently stored in the central warehouse</small>
                   </article>
                   <article className="ownership-summary-card mine">
@@ -3635,7 +3626,7 @@ function App() {
                       ))}
                     </div>
                   ) : <Empty title="No stock matches these filters" />}
-                  <ProductPagination meta={stockPager} loading={pageLoading.stock} onPageChange={(page) => setStockPager((prev) => ({ ...prev, page }))} />
+                  <Pagination meta={stockPager} loading={pageLoading.stock} onPageChange={(page) => setStockPager((prev) => ({ ...prev, page }))} />
                 </section>
 
                 <section className="stock-section-card batch-browser category-detail-hidden">
@@ -3656,7 +3647,7 @@ function App() {
                       </div>
                     )) : <Empty title="No matching price batches" />}
                   </div>
-                  <ProductPagination meta={batchPager} loading={pageLoading.batches} onPageChange={(page) => setBatchPager((prev) => ({ ...prev, page }))} />
+                  <Pagination meta={batchPager} loading={pageLoading.batches} onPageChange={(page) => setBatchPager((prev) => ({ ...prev, page }))} />
                 </section>
                   </>
                 )}
@@ -3796,7 +3787,7 @@ function App() {
                     </>
                   );
                 }} />
-                <ProductPagination meta={customerPager} loading={pageLoading.customers} onPageChange={(page) => setCustomerPager((prev) => ({ ...prev, page }))} />
+                <Pagination meta={customerPager} loading={pageLoading.customers} onPageChange={(page) => setCustomerPager((prev) => ({ ...prev, page }))} />
               </section>
             </PageWrapper>
           )}
@@ -3910,7 +3901,7 @@ function App() {
                 ) : (
                   <Empty title="No sales records found" />
                 )}
-                <ProductPagination meta={salesPager} loading={pageLoading.sales} onPageChange={(page) => setSalesPager((prev) => ({ ...prev, page }))} />
+                <Pagination meta={salesPager} loading={pageLoading.sales} onPageChange={(page) => setSalesPager((prev) => ({ ...prev, page }))} />
               </section>
             </PageWrapper>
           )}
@@ -4045,7 +4036,7 @@ function App() {
                   ))}
                   {!data.pending.length && <Empty title="No pending payments" />}
                 </motion.div>
-                <ProductPagination meta={pendingPager} loading={pageLoading.pending} onPageChange={(page) => setPendingPager((prev) => ({ ...prev, page }))} />
+                <Pagination meta={pendingPager} loading={pageLoading.pending} onPageChange={(page) => setPendingPager((prev) => ({ ...prev, page }))} />
               </section>
             </PageWrapper>
           )}
@@ -4083,7 +4074,7 @@ function App() {
                       </div>
                     )) : <Empty title="No availability records found" />}
                   </div>
-                  <ProductPagination meta={reportsPager} loading={pageLoading.reports} onPageChange={(page) => setReportsPager((prev) => ({ ...prev, page }))} />
+                  <Pagination meta={reportsPager} loading={pageLoading.reports} onPageChange={(page) => setReportsPager((prev) => ({ ...prev, page }))} />
                 </section>
                 <section className="two-col">
                 <section className="panel">
