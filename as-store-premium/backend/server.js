@@ -860,31 +860,29 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       ? ', p.purchase_price, p.wholesale_price'
       : `${visibility.show_purchase_price_shopkeeper ? ', p.purchase_price' : ''}${visibility.show_wholesale_price_shopkeeper ? ', p.wholesale_price' : ''}`;
     const officialPrice = req.user.role === 'superadmin' || visibility.show_official_price_shopkeeper ? ', p.official_price' : '';
-    const batchJoin = [
-      'ib.shop_id = st.shop_id',
-      'ib.product_id = st.product_id',
-    ];
-    const batchParams = [];
-    if (hasQueryValue(req.query.colour)) {
-      batchJoin.push('LOWER(TRIM(ib.colour)) = LOWER(TRIM(?))');
-      batchParams.push(String(req.query.colour).trim());
-    }
-    if (hasQueryValue(req.query.batch) || hasQueryValue(req.query.batchId)) {
-      batchJoin.push('ib.id = ?');
-      batchParams.push(Number(req.query.batch || req.query.batchId));
-    }
-    if (req.user.role === 'superadmin' && hasQueryValue(req.query.shopkeeperId)) {
-      batchJoin.push('ib.assigned_user_id = ?');
-      batchParams.push(Number(req.query.shopkeeperId));
-    }
-    if (req.query.ownership === 'owner') batchJoin.push('ib.assigned_user_id IS NULL');
-    if (req.query.ownership === 'shopkeeper') batchJoin.push('ib.assigned_user_id IS NOT NULL');
-    if (req.query.ownership === 'mine') batchJoin.push(`ib.assigned_user_id = ${Number(req.user.id)}`);
     const where = [];
     const whereParams = [];
+    if (hasQueryValue(req.query.colour)) {
+      where.push('LOWER(TRIM(ib.colour)) = LOWER(TRIM(?))');
+      whereParams.push(String(req.query.colour).trim());
+    }
+    if (hasQueryValue(req.query.batch) || hasQueryValue(req.query.batchId)) {
+      where.push('ib.id = ?');
+      whereParams.push(Number(req.query.batch || req.query.batchId));
+    }
+    if (req.user.role === 'superadmin' && hasQueryValue(req.query.shopkeeperId)) {
+      where.push('ib.assigned_user_id = ?');
+      whereParams.push(Number(req.query.shopkeeperId));
+    }
+    if (req.query.ownership === 'owner') where.push('ib.assigned_user_id IS NULL');
+    if (req.query.ownership === 'shopkeeper') where.push('ib.assigned_user_id IS NOT NULL');
+    if (req.query.ownership === 'mine') where.push(`ib.assigned_user_id = ${Number(req.user.id)}`);
     if (shopId) {
-      where.push('st.shop_id = ?');
+      where.push('ib.shop_id = ?');
       whereParams.push(shopId);
+    }
+    if (isShopStaffRole(req.user.role)) {
+      where.push(`(ib.assigned_user_id IS NULL OR ib.assigned_user_id = ${Number(req.user.id)})`);
     }
     appendSearchFilter(where, whereParams, req.query.search, [
       'p.name',
@@ -902,18 +900,17 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
     if (req.query.status === 'in_stock') having.push(`${stockQuantitySql} > 0`);
     if (req.query.status === 'out_of_stock') having.push(`${stockQuantitySql} = 0`);
     const baseSql = `
-      FROM stock st
-      JOIN products p ON p.id = st.product_id
-      JOIN shops sh ON sh.id = st.shop_id
-      LEFT JOIN inventory_batches ib ON ${batchJoin.join(' AND ')} ${batchAccessSql(req.user)}
+      FROM inventory_batches ib
+      JOIN products p ON p.id = ib.product_id
+      JOIN shops sh ON sh.id = ib.shop_id
       WHERE ${where.length ? where.join(' AND ') : '1 = 1'}
-      GROUP BY st.id, sh.id, p.id
+      GROUP BY ib.shop_id, sh.id, p.id
       ${having.length ? `HAVING ${having.join(' AND ')}` : ''}
     `;
-    const params = [...batchParams, ...whereParams];
+    const params = whereParams;
     const rows = await runPaginatedList({
       dataSql: `
-      SELECT st.id, st.shop_id, sh.name AS shop_name, sh.location_type, p.id AS product_id, p.name, p.short_name, p.full_model_list,
+      SELECT MIN(ib.id) AS id, ib.shop_id, sh.name AS shop_name, sh.location_type, p.id AS product_id, p.name, p.short_name, p.full_model_list,
         p.brand, p.category, p.sale_price, p.retail_price, p.description, p.colours
         ${officialPrice}${extraPrices},
         ${stockQuantitySql} AS quantity,
@@ -924,7 +921,7 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       ${baseSql}
       ORDER BY p.brand, COALESCE(p.short_name, p.name)
     `,
-      countSql: `SELECT COUNT(*) AS total FROM (SELECT st.id ${baseSql}) counted`,
+      countSql: `SELECT COUNT(*) AS total FROM (SELECT ib.shop_id, p.id ${baseSql}) counted`,
       params,
       pagination,
       totalKey: 'totalStockItems',
@@ -939,7 +936,7 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
           COALESCE(SUM(my_quantity), 0) AS my_quantity,
           COALESCE(SUM(CASE WHEN location_type = 'warehouse' THEN quantity ELSE 0 END), 0) AS warehouse_quantity
         FROM (
-          SELECT st.id, sh.location_type, COALESCE(NULLIF(TRIM(p.category), ''), 'Uncategorized') AS category,
+          SELECT ib.shop_id, p.id AS product_id, sh.location_type, COALESCE(NULLIF(TRIM(p.category), ''), 'Uncategorized') AS category,
             ${stockQuantitySql} AS quantity,
             COALESCE(SUM(CASE WHEN ib.assigned_user_id IS NULL THEN ib.quantity_remaining ELSE 0 END), 0) AS owner_quantity,
             COALESCE(SUM(CASE WHEN ib.assigned_user_id IS NOT NULL THEN ib.quantity_remaining ELSE 0 END), 0) AS shopkeeper_quantity,
@@ -1121,7 +1118,7 @@ app.post('/api/inventory-batches', authenticateToken, requireShopStaff, async (r
     } = req.body;
     const batchQuantity = Number(quantity);
     if (!product_id || !Number.isInteger(batchQuantity) || batchQuantity <= 0) {
-      return res.status(400).json({ error: 'Product and a batch quantity of at least 1 are required.' });
+      return res.status(400).json({ error: 'Product and stock quantity of at least 1 are required.' });
     }
     const effectiveAssignedUserId = isShopStaffRole(req.user.role) ? req.user.id : assigned_user_id || null;
     if (effectiveAssignedUserId) {
@@ -1149,10 +1146,10 @@ app.post('/api/inventory-batches', authenticateToken, requireShopStaff, async (r
       await syncStockFromBatches(tx, shopId, product_id);
       return inserted;
     });
-    await audit(req, 'Added inventory price batch', 'inventory_batch', result.id, `${batchQuantity} units for product ${product_id}`);
+    await audit(req, 'Added inventory stock entry', 'inventory_batch', result.id, `${batchQuantity} units for product ${product_id}`);
     res.status(201).json({ id: result.id });
   } catch (error) {
-    res.status(error.status || 500).json({ error: error.message || 'Unable to add inventory batch.' });
+    res.status(error.status || 500).json({ error: error.message || 'Unable to add inventory stock.' });
   }
 });
 

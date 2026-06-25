@@ -167,22 +167,29 @@ const combineStockRows = (items = []) => {
       combined.set(key, {
         ...item,
         quantity: Number(item.quantity || 0),
+        owner_quantity: Number(item.owner_quantity || 0),
+        shopkeeper_quantity: Number(item.shopkeeper_quantity || 0),
+        my_quantity: Number(item.my_quantity || 0),
+        owner_batch_count: Number(item.owner_batch_count || 0),
+        shopkeeper_batch_count: Number(item.shopkeeper_batch_count || 0),
+        my_batch_count: Number(item.my_batch_count || 0),
         batch_count: Number(item.batch_count || 0),
         product_ids: [String(item.product_id)],
       });
       return;
     }
     existing.quantity += Number(item.quantity || 0);
+    existing.owner_quantity += Number(item.owner_quantity || 0);
+    existing.shopkeeper_quantity += Number(item.shopkeeper_quantity || 0);
+    existing.my_quantity += Number(item.my_quantity || 0);
+    existing.owner_batch_count += Number(item.owner_batch_count || 0);
+    existing.shopkeeper_batch_count += Number(item.shopkeeper_batch_count || 0);
+    existing.my_batch_count += Number(item.my_batch_count || 0);
     existing.batch_count += Number(item.batch_count || 0);
     existing.product_ids.push(String(item.product_id));
   });
   return [...combined.values()];
 };
-const sumBatchQuantity = (batches = []) => batches.reduce((sum, batch) => sum + Number(batch.quantity_remaining || 0), 0);
-const batchBelongsToStockItem = (batch, item) => (
-  item.product_ids.includes(String(batch.product_id))
-  && (!item.shop_id || String(batch.shop_id) === String(item.shop_id))
-);
 const groupPendingPayments = (rows = []) => {
   if (rows.every((row) => Array.isArray(row.items))) return rows;
   const groups = new Map();
@@ -289,13 +296,8 @@ const initialForms = {
     opening_stock: '', description: '', colours: '',
   },
   stock: { product_id: '', quantity: '' },
-  batch: {
-    product_id: '', quantity: '', purchase_price: '', wholesale_price: '', official_price: '',
-    retail_price: '', colour: '', received_date: new Date().toISOString().slice(0, 10),
-    assigned_user_id: '', notes: '',
-  },
   customer: { name: '', mobile: '', address: '', notes: '' },
-  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', payment_mode: 'cash', due_date: '2026-06-15', notes: '', items: [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }] },
+  sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', payment_mode: 'cash', due_date: '2026-06-15', notes: '', items: [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }] },
   payment: { sale_id: '', amount: '', note: '' },
   request: { product_id: '', model_name: '', quantity: 1, message: '' },
   transfer: { from_shop_id: '', to_shop_id: '', product_id: '', quantity: '', note: '' },
@@ -684,7 +686,6 @@ function App() {
     shopkeepers: [],
     products: [],
     stock: [],
-    batches: [],
     customers: [],
     sales: [],
     requests: [],
@@ -715,7 +716,7 @@ function App() {
   const [selectedShop, setSelectedShop] = useState('');
   const [forms, setForms] = useState(initialForms);
   const [catalogFilters, setCatalogFilters] = useState({ search: '', brand: '', category: '', colour: '', shopId: '' });
-  const [stockFilters, setStockFilters] = useState({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+  const [stockFilters, setStockFilters] = useState({ search: '', brand: '', category: '', colour: '', status: '', shopkeeperId: '', ownership: '' });
   const [shopkeeperStockSearch, setShopkeeperStockSearch] = useState('');
   const [categorySearch, setCategorySearch] = useState('');
   const [stockCategoryPage, setStockCategoryPage] = useState(null);
@@ -744,7 +745,6 @@ function App() {
   const deferredModelSearch = useDeferredValue(modelSearch);
   const [productPager, setProductPager] = useState(() => createPager(50));
   const [stockPager, setStockPager] = useState(() => createPager(50));
-  const [batchPager, setBatchPager] = useState(() => createPager(50));
   const [customerPager, setCustomerPager] = useState(() => createPager(50));
   const [salesPager, setSalesPager] = useState(() => createPager(50));
   const [pendingPager, setPendingPager] = useState(() => createPager(50));
@@ -752,7 +752,6 @@ function App() {
   const [productPageLoading, setProductPageLoading] = useState(false);
   const [pageLoading, setPageLoading] = useState({
     stock: false,
-    batches: false,
     customers: false,
     sales: false,
     pending: false,
@@ -962,12 +961,12 @@ function App() {
   const openStockCategoriesHub = () => {
     setStockCategoryPage(null);
     setCategoryFiltersOpen(false);
-    setStockFilters({ search: '', brand: '', category: '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+    setStockFilters({ search: '', brand: '', category: '', colour: '', status: '', shopkeeperId: '', ownership: '' });
     setActivePage('stock-categories');
   };
   const openStockCategoryPage = (categoryName = '') => {
     setCategoryFiltersOpen(false);
-    setStockFilters({ search: '', brand: '', category: categoryName, colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' });
+    setStockFilters({ search: '', brand: '', category: categoryName, colour: '', status: '', shopkeeperId: '', ownership: '' });
     setStockCategoryPage(categoryName || '__all__');
   };
   const handleLoadError = (error, fallback = 'Unable to load data right now') => {
@@ -1020,7 +1019,7 @@ function App() {
   const applyStockQueryParams = (params, filters = stockFilters, searchOverride = '') => {
     const cleanSearch = String(searchOverride || filters.search || '').trim();
     if (cleanSearch) params.set('search', cleanSearch);
-    ['brand', 'category', 'colour', 'status', 'batch', 'shopkeeperId', 'ownership'].forEach((key) => {
+    ['brand', 'category', 'colour', 'status', 'shopkeeperId', 'ownership'].forEach((key) => {
       if (filters[key]) params.set(key, String(filters[key]));
     });
     return params;
@@ -1028,47 +1027,39 @@ function App() {
 
   const loadStockPage = async ({
     stockPage = stockPager.page,
-    batchPage = batchPager.page,
     currentShop = shopId,
     filters = stockFilters,
     search = '',
   } = {}) => {
     if (!token || role === 'customer') return;
     const requestId = ++stockLoadSequenceRef.current;
-    setPageLoading((prev) => ({ ...prev, stock: true, batches: true }));
+    setPageLoading((prev) => ({ ...prev, stock: true }));
     try {
       const stockParams = applyStockQueryParams(scopedParams(currentShop), filters, search);
       stockParams.set('page', String(stockPage));
       stockParams.set('limit', String(stockPager.limit));
       stockParams.set('includeSummary', 'true');
-      const batchParams = applyStockQueryParams(scopedParams(currentShop), filters, search);
-      batchParams.set('page', String(batchPage));
-      batchParams.set('limit', String(batchPager.limit));
-      const [stockResponse, batchResponse, shopkeepers] = await Promise.all([
+      const [stockResponse, shopkeepers] = await Promise.all([
         authedFetch(`/stock?${stockParams.toString()}`),
-        authedFetch(`/inventory-batches?${batchParams.toString()}`),
         role === 'superadmin' && !data.shopkeepers.length ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
       ]);
       if (requestId !== stockLoadSequenceRef.current) return;
       const stockRows = getPaginatedRows(stockResponse);
-      const batchRows = getPaginatedRows(batchResponse);
       setData((prev) => ({
         ...prev,
         stock: stockRows,
-        batches: batchRows,
         shopkeepers,
         stockSummary: stockResponse?.summary
           ? { ...stockResponse.summary, loaded: true }
           : prev.stockSummary,
       }));
       updatePagerFromResponse(setStockPager, stockResponse, stockPage, stockRows, ['totalStockItems']);
-      updatePagerFromResponse(setBatchPager, batchResponse, batchPage, batchRows, ['totalBatches']);
     } catch (error) {
       if (requestId !== stockLoadSequenceRef.current) return;
       handleLoadError(error, 'Unable to load stock right now.');
     } finally {
       if (requestId === stockLoadSequenceRef.current) {
-        setPageLoading((prev) => ({ ...prev, stock: false, batches: false }));
+        setPageLoading((prev) => ({ ...prev, stock: false }));
       }
     }
   };
@@ -1106,9 +1097,8 @@ function App() {
       const dependencyParams = scopedParams(saleLocation);
       dependencyParams.set('page', '1');
       dependencyParams.set('limit', '100');
-      const [stockResponse, batchResponse, customerResponse, salesResponse] = await Promise.all([
+      const [stockResponse, customerResponse, salesResponse] = await Promise.all([
         authedFetch(`/stock?${dependencyParams.toString()}`),
-        authedFetch(`/inventory-batches?${dependencyParams.toString()}`),
         authedFetch(`/customers?${dependencyParams.toString()}`),
         authedFetch(`/sales?${params.toString()}`),
       ]);
@@ -1116,7 +1106,6 @@ function App() {
       setData((prev) => ({
         ...prev,
         stock: getPaginatedRows(stockResponse),
-        batches: getPaginatedRows(batchResponse),
         customers: getPaginatedRows(customerResponse),
         sales: salesRows,
       }));
@@ -1277,7 +1266,6 @@ function App() {
       if (tab === 'stock' || tab === 'stock-categories') {
         await loadStockPage({
           stockPage: stockPager.page,
-          batchPage: batchPager.page,
           currentShop,
           filters: stockFilters,
           search: role === 'shopkeeper' && tab === 'stock' ? shopkeeperStockSearch : stockFilters.search,
@@ -1287,15 +1275,13 @@ function App() {
         const dependencyParams = scopedParams(currentShop);
         dependencyParams.set('page', '1');
         dependencyParams.set('limit', '100');
-        const [stockResponse, batchResponse, salesResponse] = await Promise.all([
+        const [stockResponse, salesResponse] = await Promise.all([
           authedFetch(`/stock?${dependencyParams.toString()}`),
-          authedFetch(`/inventory-batches?${dependencyParams.toString()}`),
           authedFetch(`/sales?${dependencyParams.toString()}`),
         ]);
         setData((prev) => ({
           ...prev,
           stock: getPaginatedRows(stockResponse),
-          batches: getPaginatedRows(batchResponse),
           sales: getPaginatedRows(salesResponse),
         }));
         await loadCustomersPage({ page: customerPager.page, currentShop, filters: customerFilters });
@@ -1434,7 +1420,6 @@ function App() {
   useEffect(() => {
     if (!['stock', 'stock-categories'].includes(active)) return;
     setStockPager((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
-    setBatchPager((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   }, [deferredStockFilters, deferredShopkeeperStockSearch]);
 
   useEffect(() => {
@@ -1462,7 +1447,6 @@ function App() {
     const search = role === 'shopkeeper' && active === 'stock' ? deferredShopkeeperStockSearch : deferredStockFilters.search;
     loadStockPage({
       stockPage: stockPager.page,
-      batchPage: batchPager.page,
       filters: deferredStockFilters,
       search,
     });
@@ -1473,8 +1457,6 @@ function App() {
     deferredShopkeeperStockSearch,
     stockPager.page,
     stockPager.limit,
-    batchPager.page,
-    batchPager.limit,
     session?.token,
     authReady,
   ]);
@@ -1615,37 +1597,6 @@ function App() {
     }
   };
 
-  const addInventoryBatch = async () => {
-    if (!requireShopSelection('Select a shop before adding an inventory batch')) return;
-    const optionalPrice = (value) => value === '' ? null : Number(value);
-    const purchasePrice = optionalPrice(forms.batch.purchase_price);
-    const wholesalePrice = optionalPrice(forms.batch.wholesale_price);
-    if ([purchasePrice, wholesalePrice].filter((price) => price !== null).some((price) => !Number.isFinite(price) || price < 0)) {
-      return showToast('Purchase and wholesale prices must be 0 or more');
-    }
-    try {
-      setSaving(true);
-      await authedFetch('/inventory-batches', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...forms.batch,
-          shop_id: shopId,
-          purchase_price: purchasePrice,
-          wholesale_price: wholesalePrice,
-          official_price: null,
-          retail_price: null,
-        }),
-      });
-      setForms((prev) => ({ ...prev, batch: initialForms.batch }));
-      showToast('Price batch added and stock updated');
-      await loadTab('stock', shopId);
-    } catch (error) {
-      showToast(error.message || 'Unable to add inventory batch');
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const addReferenceOption = async (type, name) => {
     const referenceLabel = { categories: 'category', colours: 'colour', brands: 'brand' }[type] || type;
     const cleanName = String(name || '').trim();
@@ -1772,12 +1723,11 @@ function App() {
   };
 
   const updateSaleItemProduct = (index, productId) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }])];
     const qty = Math.max(Number(currentItems[index]?.quantity || 1), 1);
     
     currentItems[index] = {
       product_id: productId,
-      batch_id: '',
       price_type: '',
       quantity: qty,
       total_amount: '',
@@ -1797,14 +1747,8 @@ function App() {
     });
   };
 
-  const updateSaleItemBatch = (index, batchId) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
-    currentItems[index] = { ...currentItems[index], batch_id: batchId };
-    setForms({ ...forms, sale: { ...forms.sale, items: currentItems } });
-  };
-
   const updateSaleItemPriceType = (index, priceType) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }])];
     const item = currentItems[index];
     const unitPrice = sellingPriceFor(item?.product_id, priceType);
     const quantity = Math.max(Number(item?.quantity || 1), 1);
@@ -1824,7 +1768,7 @@ function App() {
   };
 
   const updateSaleItemQuantity = (index, quantity) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }])];
     const numericQuantity = Math.max(Number(quantity || 0), 0);
     const price = sellingPriceFor(currentItems[index]?.product_id, currentItems[index]?.price_type);
 
@@ -1848,7 +1792,7 @@ function App() {
   };
 
   const updateSaleItemPrice = (index, priceVal) => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
+    const currentItems = [...(forms.sale.items || [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }])];
     currentItems[index] = {
       ...currentItems[index],
       total_amount: priceVal,
@@ -1865,8 +1809,8 @@ function App() {
   };
 
   const addSaleItem = () => {
-    const currentItems = [...(forms.sale.items || [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }])];
-    currentItems.push({ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' });
+    const currentItems = [...(forms.sale.items || [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }])];
+    currentItems.push({ product_id: '', price_type: '', quantity: 1, total_amount: '' });
     setForms({
       ...forms,
       sale: {
@@ -1939,7 +1883,6 @@ function App() {
           payment_mode: forms.sale.payment_mode,
           items: items.map((item) => ({
             product_id: item.product_id,
-            batch_id: item.batch_id || null,
             quantity: Number(item.quantity),
             price_type: item.price_type,
           })),
@@ -1950,7 +1893,7 @@ function App() {
         ...prev,
         sale: {
           ...initialForms.sale,
-          items: [{ product_id: '', batch_id: '', price_type: '', quantity: 1, total_amount: '' }],
+          items: [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }],
         },
       }));
       showToast('Sales created, stock reduced, pending updated');
@@ -2708,24 +2651,16 @@ function App() {
     return matchesSearch && matchesShop && matchesBrand && matchesCategory && matchesColour;
   });
 
-  const visibleBatches = data.batches;
-
   const combinedStock = combineStockRows(data.stock);
-  const stockWithOwnership = combinedStock.map((item) => {
-    const productBatches = data.batches.filter((batch) => batchBelongsToStockItem(batch, item));
-    const ownerBatches = productBatches.filter((batch) => !batch.assigned_user_id);
-    const shopkeeperBatches = productBatches.filter((batch) => Boolean(batch.assigned_user_id));
-    const myBatches = shopkeeperBatches.filter((batch) => String(batch.assigned_user_id) === String(session.id));
-    return {
-      ...item,
-      owner_quantity: item.owner_quantity !== undefined ? Number(item.owner_quantity || 0) : sumBatchQuantity(ownerBatches),
-      shopkeeper_quantity: item.shopkeeper_quantity !== undefined ? Number(item.shopkeeper_quantity || 0) : sumBatchQuantity(shopkeeperBatches),
-      my_quantity: item.my_quantity !== undefined ? Number(item.my_quantity || 0) : sumBatchQuantity(myBatches),
-      owner_batch_count: ownerBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
-      shopkeeper_batch_count: shopkeeperBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
-      my_batch_count: myBatches.filter((batch) => Number(batch.quantity_remaining) > 0).length,
-    };
-  });
+  const stockWithOwnership = combinedStock.map((item) => ({
+    ...item,
+    owner_quantity: Number(item.owner_quantity || 0),
+    shopkeeper_quantity: Number(item.shopkeeper_quantity || 0),
+    my_quantity: Number(item.my_quantity || 0),
+    owner_batch_count: Number(item.owner_batch_count || 0),
+    shopkeeper_batch_count: Number(item.shopkeeper_batch_count || 0),
+    my_batch_count: Number(item.my_batch_count || 0),
+  }));
   const shopkeeperStockItems = stockWithOwnership;
   const visibleStock = stockWithOwnership;
   const stockSummaryLoaded = Boolean(data.stockSummary?.loaded);
@@ -3323,16 +3258,12 @@ function App() {
               <StockPage
                 role={role}
                 shopId={shopId}
-                session={session}
                 forms={forms}
                 setForms={setForms}
                 data={data}
-                saving={saving}
-                needsSpecificShop={needsSpecificShop}
                 ownerInventoryQuantity={ownerInventoryQuantity}
                 myInventoryQuantity={myInventoryQuantity}
                 updateStock={updateStock}
-                addInventoryBatch={addInventoryBatch}
                 setTransferDrawerOpen={setTransferDrawerOpen}
                 openStockCategoriesHub={openStockCategoriesHub}
                 shopkeeperStockSearch={shopkeeperStockSearch}
@@ -3478,47 +3409,6 @@ function App() {
 
                 {stockCategoryPage && (
                   <>
-                <section className="stock-section-card stock-filter-panel category-detail-hidden">
-                  <div className="stock-section-heading">
-                    <div>
-                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} inventory</span>
-                      <h2>Filter this category page</h2>
-                    </div>
-                    <button
-                      className="soft"
-                      type="button"
-                      onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' })}
-                    >
-                      Clear filters
-                    </button>
-                  </div>
-                  <div className="brand-pills-bar">
-                    <button type="button" className={!stockFilters.brand ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: '' })}>All brands</button>
-                    {data.reference.brands.map((brand) => (
-                      <button key={brand.id} type="button" className={sameText(stockFilters.brand, brand.name) ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, brand: brand.name })}>
-                        {brand.name}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="ownership-filter-bar">
-                    <span>Inventory source</span>
-                    <button type="button" className={!stockFilters.ownership ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: '' })}>All available</button>
-                    <button type="button" className={stockFilters.ownership === 'owner' ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: 'owner' })}>Main warehouse stock</button>
-                    <button type="button" className={['mine', 'shopkeeper'].includes(stockFilters.ownership) ? 'active' : ''} onClick={() => setStockFilters({ ...stockFilters, ownership: role === 'shopkeeper' ? 'mine' : 'shopkeeper' })}>
-                      {role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock'}
-                    </button>
-                  </div>
-                  <div className="filter-grid">
-                    <Input label="Search this category" className="filter-search-wide" value={stockFilters.search} onChange={(v) => setStockFilters({ ...stockFilters, search: v })} />
-                    <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
-                    <Select label="Category page" value={stockFilters.category} onChange={openStockCategoryPage} options={data.reference.categories.map((item) => [item.name, item.name])} placeholder="All inventory" />
-                    <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
-                    <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
-                    <Select label="Purchase-price batch" value={stockFilters.batch} onChange={(v) => setStockFilters({ ...stockFilters, batch: v })} options={data.batches.filter((batch) => !selectedCategoryStat?.name || sameText(batch.category, selectedCategoryStat.name)).map((batch) => [batch.id, `${productName(batch)} · ${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`])} placeholder="All batches" />
-                    {role === 'superadmin' && <Select label="Shopkeeper inventory" value={stockFilters.shopkeeperId} onChange={(v) => setStockFilters({ ...stockFilters, shopkeeperId: v })} options={data.shopkeepers.filter((user) => !shopId || String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} placeholder="All shopkeepers" />}
-                  </div>
-                </section>
-
                 <section className="stock-section-card export-tools category-detail-hidden">
                   <div className="stock-section-heading">
                     <div>
@@ -3547,9 +3437,6 @@ function App() {
                       exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId, category: selectedCategoryStat?.name || '' });
                     }}>
                       <span><Download size={18} /></span><b>Shopkeeper stock</b><small>Export assigned inventory</small>
-                    </button>
-                    <button type="button" className="export-action-card" onClick={() => exportCsv('stock', { batchId: stockFilters.batch, category: selectedCategoryStat?.name || '' })}>
-                      <span><Download size={18} /></span><b>Price-batch stock</b><small>Export purchase-price batches</small>
                     </button>
                   </div>
                 </section>
@@ -3593,7 +3480,7 @@ function App() {
                               />
                             </div>
                             <div className="category-filter-actions">
-                              <button className="soft" type="button" onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', batch: '', shopkeeperId: '', ownership: '' })}>Clear</button>
+                              <button className="soft" type="button" onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', shopkeeperId: '', ownership: '' })}>Clear</button>
                               <button className="primary" type="button" onClick={() => setCategoryFiltersOpen(false)}>Show {visibleStock.length} models</button>
                             </div>
                           </div>
@@ -3629,26 +3516,6 @@ function App() {
                   <Pagination meta={stockPager} loading={pageLoading.stock} onPageChange={(page) => setStockPager((prev) => ({ ...prev, page }))} />
                 </section>
 
-                <section className="stock-section-card batch-browser category-detail-hidden">
-                  <div className="stock-section-heading">
-                    <div>
-                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} purchase history</span>
-                      <h2>Purchase-price batches</h2>
-                    </div>
-                    <span className="category-result-count">{batchPager.loaded ? batchPager.total : visibleBatches.length} batches</span>
-                  </div>
-                  <div className={`table batch-table ${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? 'with-price' : 'without-price'}`}>
-                    {visibleBatches.length ? visibleBatches.map((batch) => (
-                      <div className="row" key={batch.id}>
-                        <span className="batch-product"><b title={fullModelList(batch)}>{productName(batch)}</b><small>{batch.brand} · {batch.colour || 'No colour'} · {batch.received_date}</small></span>
-                        {(role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper) && <span className="inventory-metric"><small>Purchase price</small><strong>{priceLabel(batch.purchase_price)}</strong></span>}
-                        <span className="inventory-metric"><small>Inventory source</small><strong>{batch.assigned_user_name || 'Main warehouse shared stock'}</strong></span>
-                        <span className="inventory-metric"><small>Remaining</small><strong className={`status-badge ${batch.quantity_remaining <= 3 ? 'low-stock' : 'stock-ok'}`}>{batch.quantity_remaining} / {batch.quantity_received}</strong></span>
-                      </div>
-                    )) : <Empty title="No matching price batches" />}
-                  </div>
-                  <Pagination meta={batchPager} loading={pageLoading.batches} onPageChange={(page) => setBatchPager((prev) => ({ ...prev, page }))} />
-                </section>
                   </>
                 )}
               </section>
@@ -3674,7 +3541,7 @@ function App() {
                     <div className="border border-slate-100 rounded-2xl p-5 bg-slate-50/30 space-y-4">
                       <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Items Purchased</span>
                       {(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }]).map((item, idx) => (
-                        <div key={idx} className="flex flex-wrap items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
+                        <div key={idx} className="sale-line-item flex flex-wrap items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
                           <div className="flex-1">
                             <Select 
                               label="Item bought" 
@@ -3691,17 +3558,6 @@ function App() {
                               onChange={(v) => updateSaleItemPriceType(idx, v)}
                               options={sellingPriceOptions(item.product_id)}
                               disabled={!item.product_id}
-                            />
-                          </div>
-                          <div style={{ width: '220px' }}>
-                            <Select
-                              label="Price batch (FIFO if blank)"
-                              value={item.batch_id || ''}
-                              onChange={(v) => updateSaleItemBatch(idx, v)}
-                              options={data.batches.filter((batch) => String(batch.product_id) === String(item.product_id) && Number(batch.quantity_remaining) > 0).map((batch) => [
-                                batch.id,
-                                `${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`,
-                              ])}
                             />
                           </div>
                           <div style={{ width: '120px' }}>
@@ -3803,7 +3659,7 @@ function App() {
                     <div className="border border-slate-100 rounded-2xl p-5 bg-slate-50/30 space-y-4">
                       <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Items Purchased</span>
                       {(forms.sale.items || [{ product_id: '', quantity: 1, total_amount: '' }]).map((item, idx) => (
-                        <div key={idx} className="flex flex-wrap items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
+                        <div key={idx} className="sale-line-item flex flex-wrap items-end gap-3 bg-white border border-slate-150 p-4 rounded-xl shadow-sm relative">
                           <div className="flex-1">
                             <Select 
                               label="Item bought" 
@@ -3820,17 +3676,6 @@ function App() {
                               onChange={(v) => updateSaleItemPriceType(idx, v)}
                               options={sellingPriceOptions(item.product_id)}
                               disabled={!item.product_id}
-                            />
-                          </div>
-                          <div style={{ width: '220px' }}>
-                            <Select
-                              label="Price batch (FIFO if blank)"
-                              value={item.batch_id || ''}
-                              onChange={(v) => updateSaleItemBatch(idx, v)}
-                              options={data.batches.filter((batch) => String(batch.product_id) === String(item.product_id) && Number(batch.quantity_remaining) > 0).map((batch) => [
-                                batch.id,
-                                `${batch.received_date} · ${batch.quantity_remaining} left${role === 'superadmin' || data.priceVisibility.show_purchase_price_shopkeeper ? ` · ${priceLabel(batch.purchase_price)}` : ''}`,
-                              ])}
                             />
                           </div>
                           <div style={{ width: '120px' }}>

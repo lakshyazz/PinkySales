@@ -1,21 +1,17 @@
 import React from 'react';
-import { Smartphone, LayoutGrid, Send, Search } from 'lucide-react';
+import { Smartphone, LayoutGrid, Send } from 'lucide-react';
 import ProductPagination from '../shared/ProductPagination';
 import SearchFilter from '../shared/SearchFilter';
 
 export default function StockPage({
   role,
   shopId,
-  session,
   forms,
   setForms,
   data,
-  saving,
-  needsSpecificShop,
   ownerInventoryQuantity,
   myInventoryQuantity,
   updateStock,
-  addInventoryBatch,
   setTransferDrawerOpen,
   openStockCategoriesHub,
   shopkeeperStockSearch,
@@ -51,7 +47,7 @@ export default function StockPage({
           <p>
             {role === 'shopkeeper'
               ? 'Main warehouse stock remains available for sales. Quantity updates here are saved as your personal shopkeeper inventory.'
-              : 'Update quantities, receive purchase batches, and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.'}
+              : 'Update quantities and transfer stock here. Browse categories, filter inventory, and export reports on the dedicated categories page.'}
           </p>
         </div>
         <button className="stock-category-link" type="button" onClick={openStockCategoriesHub}>
@@ -98,71 +94,6 @@ export default function StockPage({
           onChange={(v) => setForms((prev) => ({ ...prev, stock: { ...prev.stock, quantity: v } }))} 
         />
       </FormPanel>
-
-      {role === 'superadmin' && (
-        <FormPanel 
-          title="Add purchase-price batch" 
-          action={saving ? 'Saving...' : 'Add batch'} 
-          onSubmit={addInventoryBatch} 
-          disabled={saving || needsSpecificShop}
-        >
-          <Select 
-            label="Product" 
-            className="md:col-span-3" 
-            value={forms.batch.product_id} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, product_id: v } }))} 
-            options={data.products.map((p) => [p.id, productName(p)])} 
-          />
-          <Input 
-            label="Quantity received" 
-            type="number" 
-            className="md:col-span-1" 
-            value={forms.batch.quantity} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, quantity: v } }))} 
-          />
-          <Input 
-            label="Purchase price" 
-            type="number" 
-            className="md:col-span-1" 
-            value={forms.batch.purchase_price} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, purchase_price: v } }))} 
-          />
-          <Input 
-            label="Wholesale price" 
-            type="number" 
-            className="md:col-span-1" 
-            value={forms.batch.wholesale_price} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, wholesale_price: v } }))} 
-          />
-          <Select 
-            label="Colour" 
-            className="md:col-span-1" 
-            value={forms.batch.colour} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, colour: v } }))} 
-            options={data.reference.colours.map((item) => [item.name, item.name])} 
-          />
-          <Input 
-            label="Received date" 
-            type="date" 
-            className="md:col-span-1" 
-            value={forms.batch.received_date} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, received_date: v } }))} 
-          />
-          <Select 
-            label="Assign to shopkeeper (optional)" 
-            className="md:col-span-2" 
-            value={forms.batch.assigned_user_id} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, assigned_user_id: v } }))} 
-            options={data.shopkeepers.filter((user) => String(user.shop_id) === String(shopId)).map((user) => [user.id, user.name])} 
-          />
-          <Input 
-            label="Batch notes" 
-            className="md:col-span-4" 
-            value={forms.batch.notes} 
-            onChange={(v) => setForms((prev) => ({ ...prev, batch: { ...prev.batch, notes: v } }))} 
-          />
-        </FormPanel>
-      )}
 
       {role === 'superadmin' && (
         <section className="panel transfer-launch">
