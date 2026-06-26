@@ -913,6 +913,7 @@ function App() {
     ? data.shops.find((shop) => String(shop.id) === String(selectedShop))?.name || 'Selected branch'
     : 'All branches';
   const workspaceScope = role === 'shopkeeper' ? session.shop_name : selectedShopName;
+  const pageWorkspaceScope = role === 'superadmin' && active === 'dashboard' ? 'All branches' : workspaceScope;
   const showGlobalSearch = active === 'dashboard';
   const needsSpecificShop = role === 'superadmin' && !shopId;
   const shopCountDependency = active === 'stock' ? data.shops.length : 0;
@@ -1133,7 +1134,6 @@ function App() {
       stockParams.set('page', String(stockPage));
       stockParams.set('limit', String(stockPager.limit));
       stockParams.set('includeSummary', 'true');
-      if (role === 'shopkeeper') stockParams.set('includeWarehouse', 'true');
       const [stockResponse, shopkeepers] = await Promise.all([
         authedFetch(`/stock?${stockParams.toString()}`),
         role === 'superadmin' && !data.shopkeepers.length ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
@@ -1346,9 +1346,11 @@ function App() {
     setTabLoading(true);
     try {
       setLoadError('');
+      const dashboardShopId = role === 'superadmin' ? '' : currentShop;
       const scoped = currentShop ? `?shopId=${currentShop}` : '';
+      const dashboardScoped = dashboardShopId ? `?shopId=${dashboardShopId}` : '';
       const set = (key, value) => setData((prev) => ({ ...prev, [key]: value }));
-      if (tab === 'dashboard') set('dashboard', await authedFetch(`/dashboard${scoped}`));
+      if (tab === 'dashboard') set('dashboard', await authedFetch(`/dashboard${dashboardScoped}`));
       if (tab === 'shops') set('shops', await authedFetch('/shops'));
       if (tab === 'shopkeepers') set('shopkeepers', await authedFetch('/shopkeepers'));
       if (tab === 'models') {
@@ -2034,6 +2036,15 @@ function App() {
       }));
       showToast('Sales created, stock reduced, pending updated');
       await loadTab(reloadTab, shopId);
+      if (!['sales', 'customers', 'stock'].includes(reloadTab)) {
+        await loadStockPage({
+          stockPage: stockPager.page,
+          currentShop: shopId,
+          filters: stockFilters,
+          search: stockFilters.search,
+        });
+      }
+      await loadTab('dashboard', shopId);
     } catch (error) {
       showToast(error.message || 'Unable to create sale right now');
     } finally {
@@ -2845,7 +2856,8 @@ function App() {
   const lowStockAlerts = combineLowStockAlerts(data.dashboard?.lowStock);
   const dashboardAvailability = data.dashboard?.modelAvailability || [];
   const dashboardWarehouseStock = dashboardAvailability.reduce((sum, item) => sum + Number(item.warehouse_stock || 0), 0);
-  const dashboardShopCount = data.dashboard?.shopWise?.filter((shop) => shop.location_type !== 'warehouse').length || data.dashboard?.totals?.total_shops || 0;
+  const dashboardBranchPerformance = data.dashboard?.shopWise?.filter((shop) => shop.location_type !== 'warehouse') || [];
+  const dashboardShopCount = dashboardBranchPerformance.length || data.dashboard?.totals?.total_shops || 0;
   const globalQuery = globalSearch.trim().toLowerCase();
   const globalSearchResults = (() => {
     if (!globalQuery) return [];
@@ -2992,7 +3004,7 @@ function App() {
         <header className="topbar">
           <button type="button" className="icon mobile-only" onClick={() => setOpen(true)}><Menu size={20} /></button>
           <div className="page-title">
-            <span className="eyebrow">{currentPageMeta.group} / {workspaceScope}</span>
+            <span className="eyebrow">{currentPageMeta.group} / {pageWorkspaceScope}</span>
             <h1>{currentPageMeta.title}</h1>
             <p>{currentPageMeta.description}</p>
           </div>
@@ -3156,7 +3168,7 @@ function App() {
                       viewport={{ once: true, margin: "-10px" }}
                       className="performance-list"
                     >
-                      {data.dashboard.shopWise.length ? data.dashboard.shopWise.map((shop) => (
+                      {dashboardBranchPerformance.length ? dashboardBranchPerformance.map((shop) => (
                         <motion.div 
                           variants={itemVariants} 
                           className="performance-item" 
@@ -3191,7 +3203,7 @@ function App() {
                             </div>
                           </div>
                         </motion.div>
-                      )) : <Empty title="No shops registered yet" />}
+                      )) : <Empty title="No branch shops registered yet" />}
                     </motion.div>
                   </section>
                   <section className="panel">

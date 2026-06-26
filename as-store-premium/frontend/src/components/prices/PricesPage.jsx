@@ -2,6 +2,7 @@ import React from 'react';
 import { Download, IndianRupee, Trash2 } from 'lucide-react';
 import Pagination from '../ui/Pagination';
 import SearchInput from '../ui/SearchInput';
+import ExpandableText from '../shared/ExpandableText';
 
 export default function PricesPage({
   role,
@@ -119,11 +120,20 @@ export default function PricesPage({
             </div>
             <span className="status-badge stock-ok">{product.category}</span>
           </div>
-          <h3 className="product-title" title={fullModelList(product)}>{productName(product)}</h3>
-          <p className="product-description" title={product.description || 'No description provided.'}>
-            {product.description || 'No description provided.'}
-          </p>
-          <p className="text-xs text-slate-500">{product.brand}{product.colours?.length ? ` \u00b7 ${product.colours.join(', ')}` : ''}</p>
+          <div className="price-product-copy">
+            <h3 className="product-title" title={fullModelList(product)}>{productName(product)}</h3>
+            <p className="product-description" title={product.description || 'No description provided.'}>
+              {product.description || 'No description provided.'}
+            </p>
+            <ExpandableText
+              className="price-compatible-preview"
+              label="Compatible:"
+              text={fullModelList(product)}
+              emptyText="No compatible models listed"
+              limit={92}
+            />
+            <p className="text-xs text-slate-500">{product.brand}{product.colours?.length ? ` \u00b7 ${product.colours.join(', ')}` : ''}</p>
+          </div>
           <div className="price-stack">
             <span><small>Sale</small><strong>{priceLabel(product.sale_price)}</strong></span>
             {(role === 'superadmin' || priceVisibility.show_purchase_price_shopkeeper) && <span><small>Purchase</small><strong>{priceLabel(product.purchase_price)}</strong></span>}

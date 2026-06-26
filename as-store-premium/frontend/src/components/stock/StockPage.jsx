@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import ProductPagination from '../shared/ProductPagination';
 import SearchFilter from '../shared/SearchFilter';
+import ExpandableText from '../shared/ExpandableText';
 
 export default function StockPage({
   role,
@@ -184,6 +185,19 @@ export default function StockPage({
 
   const selectedProductColours = getSelectedProductColours();
   const selectedProductDetails = data.products.find(p => String(p.id) === String(forms.stock.product_id));
+  const selectedLocation = data.shops.find((location) => String(location.id) === String(shopId));
+  const isWarehouseScope = role === 'superadmin' && selectedLocation?.location_type === 'warehouse';
+  const stockFormTitle = role === 'shopkeeper'
+    ? 'Set My Stock Quantity'
+    : isWarehouseScope
+      ? 'Set Warehouse Stock Quantity'
+      : 'Set Branch Stock Quantity';
+  const ownerQuantityLabel = isWarehouseScope
+    ? 'Warehouse'
+    : role === 'shopkeeper'
+      ? 'Branch stock'
+      : 'Owner stock';
+  const assignedQuantityLabel = role === 'shopkeeper' ? 'My assigned stock' : 'Assigned stock';
 
   // Determine current stock item metrics for selected product
   const getStockMetricPreview = () => {
@@ -213,7 +227,7 @@ export default function StockPage({
           </h2>
           <p>
             {role === 'shopkeeper'
-              ? 'Update quantities for your shop. Main warehouse stock remains available for customer sales.'
+              ? 'Update quantities for your assigned shop. Other branch stock stays hidden from branch logins.'
               : 'Add products, manage system catalogs, update stock levels, and monitor branch availability.'}
           </p>
         </div>
@@ -223,14 +237,14 @@ export default function StockPage({
       {role === 'shopkeeper' && (
         <section className="inventory-ownership-summary compact-summary" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
           <article className="ownership-summary-card owner" style={{ padding: '16px', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
-            <span style={{ fontSize: '12px', opacity: 0.6 }}>Main Warehouse Available</span>
+            <span style={{ fontSize: '12px', opacity: 0.6 }}>Branch Shared Stock</span>
             <strong style={{ fontSize: '24px', display: 'block', margin: '4px 0' }}>{ownerInventoryQuantity} pcs</strong>
-            <small style={{ fontSize: '11px', opacity: 0.5 }}>Shared stock available for sale</small>
+            <small style={{ fontSize: '11px', opacity: 0.5 }}>Unassigned stock in your shop</small>
           </article>
           <article className="ownership-summary-card mine" style={{ padding: '16px', borderRadius: '16px', border: '1px solid rgba(25,160,140,0.2)', background: 'rgba(25,160,140,0.05)' }}>
-            <span style={{ fontSize: '12px', opacity: 0.6, color: '#14b8a6' }}>My Shopkeeper Stock</span>
+            <span style={{ fontSize: '12px', opacity: 0.6, color: '#14b8a6' }}>My Assigned Stock</span>
             <strong style={{ fontSize: '24px', display: 'block', margin: '4px 0', color: '#14b8a6' }}>{myInventoryQuantity} pcs</strong>
-            <small style={{ fontSize: '11px', opacity: 0.5 }}>Stock added/owned by your branch</small>
+            <small style={{ fontSize: '11px', opacity: 0.5 }}>Stock assigned to your login</small>
           </article>
         </section>
       )}
@@ -240,7 +254,7 @@ export default function StockPage({
         
         {/* Set/Add Stock Level Card */}
         <FormPanel 
-          title={role === 'shopkeeper' ? 'Set My Stock Quantity' : 'Set Branch Stock Quantity'} 
+          title={stockFormTitle}
           action="Save Quantity" 
           onSubmit={updateStock}
           disabled={saving || !forms.stock.product_id || forms.stock.quantity === ''}
@@ -269,11 +283,11 @@ export default function StockPage({
             {forms.stock.product_id && (
               <div style={{ padding: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '12px', display: 'flex', flexWrap: 'wrap', gap: '24px', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div>
-                  <span style={{ fontSize: '12px', opacity: 0.6, display: 'block' }}>Current Stock Metrics:</span>
-                  <div style={{ display: 'flex', gap: '16px', marginTop: '4px' }}>
-                    <span style={{ fontSize: '13px' }}>Total Available: <b style={{ color: '#14b8a6' }}>{stockPreview?.quantity || 0} pcs</b></span>
-                    <span style={{ fontSize: '13px', opacity: 0.8 }}>Warehouse: <b>{stockPreview?.owner_quantity || 0}</b></span>
-                    <span style={{ fontSize: '13px', opacity: 0.8 }}>My Branch: <b>{stockPreview?.my_quantity || 0}</b></span>
+                    <span style={{ fontSize: '12px', opacity: 0.6, display: 'block' }}>Current Stock Metrics:</span>
+                    <div style={{ display: 'flex', gap: '16px', marginTop: '4px' }}>
+                      <span style={{ fontSize: '13px' }}>Total Available: <b style={{ color: '#14b8a6' }}>{stockPreview?.quantity || 0} pcs</b></span>
+                    <span style={{ fontSize: '13px', opacity: 0.8 }}>{ownerQuantityLabel}: <b>{stockPreview?.owner_quantity || 0}</b></span>
+                    <span style={{ fontSize: '13px', opacity: 0.8 }}>{assignedQuantityLabel}: <b>{role === 'shopkeeper' ? stockPreview?.my_quantity || 0 : stockPreview?.shopkeeper_quantity || 0}</b></span>
                   </div>
                 </div>
 
@@ -840,7 +854,11 @@ export default function StockPage({
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
                     <b style={{ fontSize: '14px', color: 'var(--ink)', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{productName(item)}</b>
                     {fullModelList(item) && fullModelList(item) !== productName(item) && (
-                      <small style={{ color: 'var(--muted-strong)', fontSize: '11px', lineHeight: 1.3, marginTop: '2px', overflowWrap: 'anywhere' }}>{fullModelList(item)}</small>
+                      <ExpandableText
+                        className="stock-compatible-models"
+                        text={fullModelList(item)}
+                        limit={78}
+                      />
                     )}
                     <small style={{ color: 'var(--muted)', fontSize: '11px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
                       <span style={{ padding: '2px 6px', background: 'rgba(15,23,42,0.06)', color: 'var(--ink-soft)', borderRadius: '4px', fontSize: '10px', fontWeight: 700 }}>{item.brand || 'No brand'}</span>
@@ -894,7 +912,7 @@ export default function StockPage({
                     )}
                   </span>
                   <small style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>
-                    {isWarehouseRow ? 'Warehouse' : 'Owner'}: <b>{item.owner_quantity}</b> - {role === 'shopkeeper' ? 'My branch' : 'Assigned'}: <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b>
+                    {isWarehouseRow ? 'Warehouse' : role === 'shopkeeper' ? 'Branch stock' : 'Owner'}: <b>{item.owner_quantity}</b> - {role === 'shopkeeper' ? 'My assigned' : 'Assigned'}: <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b>
                   </small>
                 </div>
 

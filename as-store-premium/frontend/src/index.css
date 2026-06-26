@@ -1386,6 +1386,44 @@ button:disabled {
   -webkit-line-clamp: 2;
 }
 
+.expandable-text {
+  min-width: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.expandable-text-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.expandable-text b {
+  color: var(--ink-soft);
+  font-weight: 900;
+}
+
+.read-more-button {
+  min-height: 22px;
+  padding: 0 7px;
+  border: 1px solid rgba(20, 184, 166, 0.22);
+  border-radius: 999px;
+  color: var(--teal-dark);
+  background: rgba(240, 253, 250, 0.9);
+  font-size: 0.64rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.read-more-button:hover {
+  border-color: rgba(20, 184, 166, 0.42);
+  background: rgba(204, 251, 241, 0.92);
+}
+
 .model-description {
   min-height: 42px;
   margin: 0 0 8px;
@@ -2622,24 +2660,18 @@ button:disabled {
 
 .compact-price-grid .card > :nth-child(2) {
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 1 / span 3;
   margin: 0;
 }
 
 .compact-price-grid .card > :nth-child(3) {
-  grid-column: 2;
-  grid-row: 2;
-  margin: 1px 0 0;
-  color: var(--ink-soft);
+  grid-column: 3;
+  grid-row: 1 / span 3;
 }
 
 .compact-price-grid .card > :nth-child(4) {
-  grid-column: 2;
-  grid-row: 3;
-  margin: 2px 0 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  grid-column: 4;
+  grid-row: 1 / span 3;
 }
 
 .compact-price-grid .card > .price-stack {
@@ -2681,6 +2713,16 @@ button:disabled {
   color: var(--teal-dark);
 }
 
+.price-product-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.price-compatible-preview {
+  max-width: 100%;
+}
+
 .compact-price-grid .card > :last-child {
   grid-column: 4;
   grid-row: 1 / span 3;
@@ -2702,8 +2744,6 @@ button:disabled {
 .compact-price-grid .product-description {
   -webkit-line-clamp: 1;
   min-height: 0;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .compact-price-grid .product-title {
@@ -2735,6 +2775,10 @@ button:disabled {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.model-compatible-preview.expanded {
+  white-space: normal;
 }
 
 .model-row-description {
@@ -4279,19 +4323,8 @@ button:disabled {
 
 .stock-compatible-models {
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.stock-compatible-models small {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.68rem;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 100%;
+  margin-top: 2px;
 }
 
 .model-compatible-preview {

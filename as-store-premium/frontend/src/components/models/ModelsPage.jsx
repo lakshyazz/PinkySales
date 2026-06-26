@@ -2,6 +2,7 @@ import React from 'react';
 import { Smartphone } from 'lucide-react';
 import Pagination from '../ui/Pagination';
 import SearchInput from '../ui/SearchInput';
+import ExpandableText from '../shared/ExpandableText';
 
 export default function ModelsPage({
   items,
@@ -47,9 +48,13 @@ export default function ModelsPage({
                 <span className="model-row-description" title={product.description || 'No description provided'}>
                   <b>Description:</b> {product.description || 'No description provided'}
                 </span>
-                <span className="model-compatible-preview" title={fullModelList(product)}>
-                  <b>Compatible:</b> {fullModelList(product) || 'No compatible models listed'}
-                </span>
+                <ExpandableText
+                  className="model-compatible-preview"
+                  label="Compatible:"
+                  text={fullModelList(product)}
+                  emptyText="No compatible models listed"
+                  limit={120}
+                />
               </span>
             </div>
             <span className="inventory-metric">
