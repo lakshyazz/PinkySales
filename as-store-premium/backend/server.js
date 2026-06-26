@@ -183,7 +183,7 @@ const getPriceVisibility = async () => {
   };
 };
 const productColumnsForRole = async (role) => {
-  const base = ['id', 'name', 'short_name', 'full_model_list', 'brand', 'category', 'sale_price', 'retail_price', 'description', 'colours', 'is_active', 'updated_at'];
+  const base = ['id', 'name', 'short_name', 'full_model_list', 'brand', 'category', 'model', 'sale_price', 'retail_price', 'description', 'colours', 'is_active', 'updated_at'];
   if (role === 'superadmin') return [...base, 'official_price', 'purchase_price', 'wholesale_price'].join(', ');
   const visibility = await getPriceVisibility();
   if (visibility.show_official_price_shopkeeper) base.push('official_price');
@@ -210,6 +210,7 @@ const getProductsForRole = async (role, query = {}) => {
     "COALESCE(full_model_list, '')",
     "COALESCE(brand, '')",
     "COALESCE(category, '')",
+    "COALESCE(model, '')",
     "COALESCE(description, '')",
   ]);
   appendExactFilter(where, params, query.brand, 'brand = ?');
@@ -480,7 +481,7 @@ app.get('/api/dashboard', authenticateToken, requireShopStaff, async (req, res) 
       GROUP BY due_date
     `, shopId ? [...trendDays, shopId] : trendDays),
     allRecords(`
-      SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category, p.description, p.colours, p.official_price, p.sale_price,
+      SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category, p.model, p.description, p.colours, p.official_price, p.sale_price,
         COALESCE(SUM(ib.quantity_remaining), 0) AS available_stock,
         COALESCE(SUM(ib.quantity_remaining) FILTER (WHERE sh.location_type = 'warehouse'), 0) AS warehouse_stock,
         STRING_AGG(DISTINCT CASE WHEN ib.quantity_remaining > 0 THEN sh.name END, ', ') AS available_locations
@@ -636,13 +637,76 @@ app.post('/api/reference-data/:type', authenticateToken, requireShopStaff, async
   const table = tables[req.params.type];
   const name = String(req.body.name || '').trim();
   if (!table || !name) return res.status(400).json({ error: 'Choose a valid reference type and enter a name.' });
-  if (req.user.role !== 'superadmin' && req.params.type !== 'categories') {
-    return res.status(403).json({ error: 'Only the Super Admin can add brands or colours.' });
+  
+  // Non-superadmins (shopkeepers) can only add colours. Brands and categories are superadmin-only.
+  if (req.user.role !== 'superadmin' && req.params.type !== 'colours') {
+    return res.status(403).json({ error: 'Only the Super Admin can add categories or brands.' });
   }
+  
   const reference = await ensureReference(table, name);
   const singularType = { categories: 'category', colours: 'colour', brands: 'brand' }[req.params.type];
   await audit(req, `Added ${singularType}`, singularType, reference.id, reference.name);
   res.status(201).json(reference);
+});
+
+app.put('/api/reference-data/:type/:id', authenticateToken, requireShopStaff, async (req, res) => {
+  const tables = { categories: 'categories', colours: 'colours', brands: 'brands' };
+  const table = tables[req.params.type];
+  const name = String(req.body.name || '').trim();
+  const id = Number(req.params.id);
+  if (!table || !name || isNaN(id)) return res.status(400).json({ error: 'Invalid reference update request.' });
+
+  // Only Super Admin can rename brands and categories. Colours can be renamed by both.
+  if (req.user.role !== 'superadmin' && table !== 'colours') {
+    return res.status(403).json({ error: 'Only the Super Admin can rename categories or brands.' });
+  }
+
+  // Case-insensitive duplicate check
+  const duplicate = await getRecord(`SELECT id FROM ${table} WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) AND id != ?`, [name, id]);
+  if (duplicate) return res.status(409).json({ error: 'A reference item with this name already exists.' });
+
+  const oldItem = await getRecord(`SELECT name FROM ${table} WHERE id = ?`, [id]);
+  if (!oldItem) return res.status(404).json({ error: 'Reference item not found.' });
+
+  await runTransaction(async (tx) => {
+    await tx.runQuery(`UPDATE ${table} SET name = ? WHERE id = ?`, [name, id]);
+    if (table === 'brands') {
+      await tx.runQuery('UPDATE products SET brand = ? WHERE brand = ?', [name, oldItem.name]);
+    } else if (table === 'categories') {
+      await tx.runQuery('UPDATE products SET category = ? WHERE category = ?', [name, oldItem.name]);
+    } else if (table === 'colours') {
+      await tx.runQuery('UPDATE products SET colours = array_replace(colours, ?, ?) WHERE ? = ANY(colours)', [oldItem.name, name, oldItem.name]);
+      await tx.runQuery('UPDATE inventory_batches SET colour = ? WHERE colour = ?', [name, oldItem.name]);
+    }
+  });
+
+  invalidateCache('reference-data');
+  await audit(req, `Renamed ${req.params.type.slice(0, -1)}`, req.params.type.slice(0, -1), id, `${oldItem.name} -> ${name}`);
+  res.json({ success: true, id, name });
+});
+
+app.delete('/api/reference-data/:type/:id', authenticateToken, requireShopStaff, async (req, res) => {
+  const tables = { categories: 'categories', colours: 'colours', brands: 'brands' };
+  const table = tables[req.params.type];
+  const id = Number(req.params.id);
+  if (!table || isNaN(id)) return res.status(400).json({ error: 'Invalid reference delete request.' });
+
+  // Only Super Admin can delete categories or brands. Colours can be deleted by both.
+  if (req.user.role !== 'superadmin' && table !== 'colours') {
+    return res.status(403).json({ error: 'Only the Super Admin can delete categories or brands.' });
+  }
+
+  const item = await getRecord(`SELECT name FROM ${table} WHERE id = ?`, [id]);
+  if (!item) return res.status(404).json({ error: 'Reference item not found.' });
+
+  await runTransaction(async (tx) => {
+    // Soft-delete: set is_active = FALSE
+    await tx.runQuery(`UPDATE ${table} SET is_active = FALSE WHERE id = ?`, [id]);
+  });
+
+  invalidateCache('reference-data');
+  await audit(req, `Archived ${req.params.type.slice(0, -1)}`, req.params.type.slice(0, -1), id, item.name);
+  res.json({ success: true, id });
 });
 
 app.get('/api/settings/price-visibility', authenticateToken, requireShopStaff, async (_req, res) => {
@@ -672,11 +736,13 @@ app.get('/api/export-data', authenticateToken, requireShopStaff, async (req, res
 
   const shopId = isShopStaffRole(req.user.role) ? Number(req.user.shop_id) : Number(req.query.shopId || 0);
   const visibility = await getPriceVisibility();
+  
+  // Use product level prices for the export instead of batch-level prices.
   const priceColumns = req.user.role === 'superadmin'
-    ? 'ib.purchase_price, ib.wholesale_price, p.sale_price,'
-    : `${visibility.show_purchase_price_shopkeeper ? 'ib.purchase_price,' : ''}${visibility.show_wholesale_price_shopkeeper ? 'ib.wholesale_price,' : ''} p.sale_price,`;
+    ? 'p.purchase_price, p.wholesale_price, p.sale_price,'
+    : `${visibility.show_purchase_price_shopkeeper ? 'p.purchase_price,' : ''}${visibility.show_wholesale_price_shopkeeper ? 'p.wholesale_price,' : ''} p.sale_price,`;
   const params = [];
-  const where = ['1 = 1'];
+  const where = ['1 = 1', 'p.is_active = 1'];
   if (shopId) {
     where.push('ib.shop_id = ?');
     params.push(shopId);
@@ -697,24 +763,34 @@ app.get('/api/export-data', authenticateToken, requireShopStaff, async (req, res
     where.push('ib.id = ?');
     params.push(batchId);
   }
-  if (status === 'in_stock') where.push('ib.quantity_remaining > 0');
-  if (status === 'out_of_stock') where.push('ib.quantity_remaining = 0');
+  
+  // Scopes and permissions checks
   if (req.user.role === 'superadmin' && shopkeeperId) {
     where.push('ib.assigned_user_id = ?');
     params.push(shopkeeperId);
   }
+  
+  // Filter by stock status
+  const stockQuantitySql = 'COALESCE(SUM(ib.quantity_remaining), 0)';
+  const having = [];
+  if (status === 'in_stock') having.push(`${stockQuantitySql} > 0`);
+  if (status === 'out_of_stock') having.push(`${stockQuantitySql} = 0`);
+  if (status === 'low_stock') having.push(`${stockQuantitySql} > 0 AND ${stockQuantitySql} <= sh.low_stock_threshold`);
+
   const rows = await allRecords(`
-    SELECT p.short_name AS product_name, p.full_model_list AS model_name, p.brand, p.category,
-      ib.colour, ${priceColumns} ib.quantity_remaining AS quantity, ib.quantity_received,
-      sh.name AS shop_name, u.name AS shopkeeper_name, ib.received_date AS date_added,
-      CASE WHEN ib.quantity_remaining > 0 THEN 'In Stock' ELSE 'Out of Stock' END AS stock_status,
-      ib.id AS batch_id
+    SELECT p.short_name AS product_name, p.full_model_list AS model_name, p.brand, p.category, p.model,
+      ib.colour, ${priceColumns} SUM(ib.quantity_remaining) AS quantity, SUM(ib.quantity_received) AS quantity_received,
+      sh.name AS shop_name, u.name AS shopkeeper_name, MAX(ib.received_date) AS date_added,
+      CASE WHEN SUM(ib.quantity_remaining) > 0 THEN 'In Stock' ELSE 'Out of Stock' END AS stock_status
     FROM inventory_batches ib
     JOIN products p ON p.id = ib.product_id
     JOIN shops sh ON sh.id = ib.shop_id
     LEFT JOIN users u ON u.id = ib.assigned_user_id
     WHERE ${where.join(' AND ')} ${batchAccessSql(req.user)}
-    ORDER BY p.brand, COALESCE(p.short_name, p.name), ib.received_date, ib.id
+    GROUP BY p.id, p.short_name, p.full_model_list, p.brand, p.category, p.model, ib.colour,
+      p.purchase_price, p.wholesale_price, p.sale_price, sh.name, u.name
+    ${having.length ? `HAVING ${having.join(' AND ')}` : ''}
+    ORDER BY p.brand, COALESCE(p.short_name, p.name)
   `, params);
   res.json(rows);
 });
@@ -723,12 +799,12 @@ app.get('/api/products', authenticateToken, requireShopStaff, async (req, res) =
   res.json(await getProductsForRole(req.user.role, req.query));
 });
 
-app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res) => {
+app.post('/api/products', authenticateToken, requireShopStaff, async (req, res) => {
   const {
-    name, short_name, full_model_list, brand, category, official_price,
+    name, short_name, full_model_list, brand, category, model, official_price,
     purchase_price, sale_price, wholesale_price, retail_price, description, colours,
   } = req.body;
-    const compatibilityModels = String(full_model_list || name || '').trim();
+  const compatibilityModels = String(full_model_list || name || '').trim();
   const displayName = String(short_name || compatibilityModels).trim();
   
   const parsePrice = (val, fallback = null) => {
@@ -747,37 +823,42 @@ app.post('/api/products', authenticateToken, requireSuperAdmin, async (req, res)
   const officialPriceNum = salePriceNum;
   const retailPriceNum = salePriceNum;
 
+  const categoryRef = await ensureReference('categories', category);
+  const brandRef = await ensureReference('brands', brand);
+  const canonicalColours = [];
+  for (const colour of normalizeColours(colours)) {
+    const colRef = await ensureReference('colours', colour);
+    if (colRef) canonicalColours.push(colRef.name);
+  }
+  const canonicalBrand = brandRef ? brandRef.name : brand.trim();
+  const canonicalCategory = categoryRef ? categoryRef.name : category.trim();
+
   const result = await runQuery(
     `INSERT INTO products (
-      name, short_name, full_model_list, brand, category, official_price,
+      name, short_name, full_model_list, brand, category, model, official_price,
       purchase_price, sale_price, wholesale_price, retail_price, description, colours
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      compatibilityModels, displayName, compatibilityModels, brand, category, officialPriceNum,
-      purchasePriceNum, salePriceNum, wholesalePriceNum, retailPriceNum, description || '', normalizeColours(colours),
+      compatibilityModels, displayName, compatibilityModels, canonicalBrand, canonicalCategory, model || '', officialPriceNum,
+      purchasePriceNum, salePriceNum, wholesalePriceNum, retailPriceNum, description || '', canonicalColours,
     ]
   );
   const shops = await allRecords('SELECT id FROM shops');
   for (const shop of shops) {
     await runQuery('INSERT INTO stock (shop_id, product_id, quantity) VALUES (?, ?, 0) ON CONFLICT(shop_id, product_id) DO NOTHING', [shop.id, result.id]);
   }
-  await ensureReference('categories', category);
-  await ensureReference('brands', brand);
-  for (const colour of normalizeColours(colours)) {
-    await ensureReference('colours', colour);
-  }
   await audit(req, 'Created product and official price', 'product', result.id, `${displayName} at ${official_price}`);
   res.status(201).json({ id: result.id, name: compatibilityModels, short_name: displayName, full_model_list: compatibilityModels });
 });
 
-app.put('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+app.put('/api/products/:id', authenticateToken, requireShopStaff, async (req, res) => {
   const oldProduct = await getRecord('SELECT * FROM products WHERE id = ?', [req.params.id]);
   if (!oldProduct) return res.status(404).json({ error: 'Product not found.' });
   const {
-    name, short_name, full_model_list, brand, category, official_price,
+    name, short_name, full_model_list, brand, category, model, official_price,
     purchase_price, sale_price, wholesale_price, retail_price, description, colours, is_active = 1,
   } = req.body;
-    const compatibilityModels = String(full_model_list || name || '').trim();
+  const compatibilityModels = String(full_model_list || name || '').trim();
   const displayName = String(short_name || compatibilityModels).trim();
 
   const parsePrice = (val, fallback = null) => {
@@ -796,27 +877,32 @@ app.put('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, r
   const officialPriceNum = salePriceNum;
   const retailPriceNum = salePriceNum;
 
+  const categoryRef = await ensureReference('categories', category);
+  const brandRef = await ensureReference('brands', brand);
+  const canonicalColours = [];
+  for (const colour of normalizeColours(colours)) {
+    const colRef = await ensureReference('colours', colour);
+    if (colRef) canonicalColours.push(colRef.name);
+  }
+  const canonicalBrand = brandRef ? brandRef.name : brand.trim();
+  const canonicalCategory = categoryRef ? categoryRef.name : category.trim();
+
   await runQuery(
     `UPDATE products SET
-      name = ?, short_name = ?, full_model_list = ?, brand = ?, category = ?, official_price = ?,
+      name = ?, short_name = ?, full_model_list = ?, brand = ?, category = ?, model = ?, official_price = ?,
       purchase_price = ?, sale_price = ?, wholesale_price = ?, retail_price = ?,
       description = ?, colours = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`,
     [
-      compatibilityModels, displayName, compatibilityModels, brand, category, officialPriceNum,
-      purchasePriceNum, salePriceNum, wholesalePriceNum, retailPriceNum, description || '', normalizeColours(colours), is_active, req.params.id,
+      compatibilityModels, displayName, compatibilityModels, canonicalBrand, canonicalCategory, model || '', officialPriceNum,
+      purchasePriceNum, salePriceNum, wholesalePriceNum, retailPriceNum, description || '', canonicalColours, is_active, req.params.id,
     ]
   );
-  await ensureReference('categories', category);
-  await ensureReference('brands', brand);
-  for (const colour of normalizeColours(colours)) {
-    await ensureReference('colours', colour);
-  }
   await audit(req, 'Updated official price', 'product', req.params.id, `${oldProduct?.official_price || 0} -> ${official_price}`);
   res.json({ success: true });
 });
 
-app.delete('/api/products/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+app.delete('/api/products/:id', authenticateToken, requireShopStaff, async (req, res) => {
   try {
     const product = await getRecord('SELECT id, name, short_name FROM products WHERE id = ?', [req.params.id]);
     if (!product) return res.status(404).json({ error: 'Product not found.' });
@@ -829,10 +915,12 @@ app.delete('/api/products/:id', authenticateToken, requireSuperAdmin, async (req
       [req.params.id, req.params.id, req.params.id]
     );
     const historyCount = Number(history?.sale_count || 0) + Number(history?.request_count || 0) + Number(history?.transfer_count || 0);
+    
+    // Soft delete / archive product if it has sales, request, or transfer history
     if (historyCount > 0) {
-      return res.status(409).json({
-        error: 'This product has sales, request, or transfer history and cannot be deleted.',
-      });
+      await runQuery('UPDATE products SET is_active = 0 WHERE id = ?', [req.params.id]);
+      await audit(req, 'Soft deleted product (archived due to history)', 'product', req.params.id, product.short_name || product.name);
+      return res.json({ success: true, archived: true });
     }
 
     await runTransaction(async (tx) => {
@@ -860,7 +948,9 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       ? ', p.purchase_price, p.wholesale_price'
       : `${visibility.show_purchase_price_shopkeeper ? ', p.purchase_price' : ''}${visibility.show_wholesale_price_shopkeeper ? ', p.wholesale_price' : ''}`;
     const officialPrice = req.user.role === 'superadmin' || visibility.show_official_price_shopkeeper ? ', p.official_price' : '';
-    const where = [];
+    
+    // Only show active products in the live stock list
+    const where = ['p.is_active = 1'];
     const whereParams = [];
     if (hasQueryValue(req.query.colour)) {
       where.push('LOWER(TRIM(ib.colour)) = LOWER(TRIM(?))');
@@ -890,15 +980,20 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       "COALESCE(p.full_model_list, '')",
       "COALESCE(p.brand, '')",
       "COALESCE(p.category, '')",
+      "COALESCE(p.model, '')",
       "COALESCE(p.description, '')",
       "COALESCE(sh.name, '')",
     ]);
     appendExactFilter(where, whereParams, req.query.brand, 'p.brand = ?');
     appendExactFilter(where, whereParams, req.query.category, 'LOWER(TRIM(p.category)) = LOWER(TRIM(?))');
+    appendExactFilter(where, whereParams, req.query.model, 'LOWER(TRIM(p.model)) = LOWER(TRIM(?))');
+    
     const stockQuantitySql = 'COALESCE(SUM(ib.quantity_remaining), 0)';
     const having = [];
     if (req.query.status === 'in_stock') having.push(`${stockQuantitySql} > 0`);
     if (req.query.status === 'out_of_stock') having.push(`${stockQuantitySql} = 0`);
+    if (req.query.status === 'low_stock') having.push(`${stockQuantitySql} > 0 AND ${stockQuantitySql} <= sh.low_stock_threshold`);
+    
     const baseSql = `
       FROM inventory_batches ib
       JOIN products p ON p.id = ib.product_id
@@ -908,10 +1003,16 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       ${having.length ? `HAVING ${having.join(' AND ')}` : ''}
     `;
     const params = whereParams;
+    
+    let orderBy = 'p.brand, COALESCE(p.short_name, p.name)';
+    if (req.query.status === 'recently_added') {
+      orderBy = 'MAX(ib.received_date) DESC, MAX(ib.id) DESC';
+    }
+
     const rows = await runPaginatedList({
       dataSql: `
       SELECT MIN(ib.id) AS id, ib.shop_id, sh.name AS shop_name, sh.location_type, p.id AS product_id, p.name, p.short_name, p.full_model_list,
-        p.brand, p.category, p.sale_price, p.retail_price, p.description, p.colours
+        p.brand, p.category, p.model, p.sale_price, p.retail_price, p.description, p.colours
         ${officialPrice}${extraPrices},
         ${stockQuantitySql} AS quantity,
         COALESCE(SUM(CASE WHEN ib.assigned_user_id IS NULL THEN ib.quantity_remaining ELSE 0 END), 0) AS owner_quantity,
@@ -919,7 +1020,7 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
         COALESCE(SUM(CASE WHEN ib.assigned_user_id = ${Number(req.user.id)} THEN ib.quantity_remaining ELSE 0 END), 0) AS my_quantity,
         COUNT(ib.id) FILTER (WHERE ib.quantity_remaining > 0) AS batch_count
       ${baseSql}
-      ORDER BY p.brand, COALESCE(p.short_name, p.name)
+      ORDER BY ${orderBy}
     `,
       countSql: `SELECT COUNT(*) AS total FROM (SELECT ib.shop_id, p.id ${baseSql}) counted`,
       params,

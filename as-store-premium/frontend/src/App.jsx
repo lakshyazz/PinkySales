@@ -226,10 +226,7 @@ const navByRole = {
     ['dashboard', 'Dashboard', BarChart3],
     ['shops', 'Shops', Building2],
     ['shopkeepers', 'Shopkeepers', UserCog],
-    ['prices', 'Prices', IndianRupee],
-    ['models', 'Models', Smartphone],
     ['stock', 'Stock', Package],
-    ['stock-categories', 'Stock Categories', LayoutGrid],
     ['customers', 'Customers', Users],
     ['sales', 'Sales', ReceiptText],
     ['requests', 'Requests', Send],
@@ -239,13 +236,10 @@ const navByRole = {
   shopkeeper: [
     ['dashboard', 'Dashboard', BarChart3],
     ['stock', 'Stock', Package],
-    ['stock-categories', 'Stock Categories', LayoutGrid],
     ['customers', 'Customers', Users],
     ['requests', 'Requests', Send],
     ['sales', 'Create Sale', ReceiptText],
     ['payments', 'Pending', CreditCard],
-    ['prices', 'Price List', IndianRupee],
-    ['models', 'Models', Smartphone],
     ['reports', 'Reports', FileText],
   ],
   customer: [
@@ -291,11 +285,11 @@ const initialForms = {
   shop: { name: '', area: '', address: '', phone: '' },
   shopkeeper: { username: '', password: '', name: '', contact: '', shop_id: '' },
   product: {
-    short_name: '', full_model_list: '', brand: '', category: 'Display',
+    short_name: '', full_model_list: '', brand: '', category: 'Display', model: '',
     official_price: '', purchase_price: '', sale_price: '', wholesale_price: '', retail_price: '',
     opening_stock: '', description: '', colours: '',
   },
-  stock: { product_id: '', quantity: '' },
+  stock: { product_id: '', quantity: '', colour: '' },
   customer: { name: '', mobile: '', address: '', notes: '' },
   sale: { product_id: '', customer_id: '', quantity: 1, total_amount: '', paid_amount: '', payment_mode: 'cash', due_date: '2026-06-15', notes: '', items: [{ product_id: '', price_type: '', quantity: 1, total_amount: '' }] },
   payment: { sale_id: '', amount: '', note: '' },
@@ -815,8 +809,8 @@ function App() {
   const nav = navByRole[role] || navByRole.customer;
   const showGlobalSearch = active === 'dashboard';
   const needsSpecificShop = role === 'superadmin' && !shopId;
-  const shopCountDependency = ['stock', 'stock-categories'].includes(active) ? data.shops.length : 0;
-  const activeProductSearch = active === 'prices' ? deferredPriceSearch : active === 'models' ? deferredModelSearch : '';
+  const shopCountDependency = active === 'stock' ? data.shops.length : 0;
+  const activeProductSearch = active === 'models' ? deferredModelSearch : '';
 
   const syncActivePath = (page, mode = 'push') => {
     if (typeof window === 'undefined' || !validPageIds.has(page)) return;
@@ -935,8 +929,7 @@ function App() {
     if (result.kind === 'brand') {
       setStockFilters((prev) => ({ ...prev, brand: result.title, search: '' }));
       setCatalogFilters((prev) => ({ ...prev, brand: result.title, search: '' }));
-      setActivePage(role === 'customer' ? 'catalog' : 'stock-categories');
-      if (role !== 'customer') setStockCategoryPage('__all__');
+      setActivePage(role === 'customer' ? 'catalog' : 'stock');
       return;
     }
 
@@ -957,17 +950,6 @@ function App() {
       if (role === 'superadmin') setSelectedShop(String(result.item.id));
       setActivePage('dashboard');
     }
-  };
-  const openStockCategoriesHub = () => {
-    setStockCategoryPage(null);
-    setCategoryFiltersOpen(false);
-    setStockFilters({ search: '', brand: '', category: '', colour: '', status: '', shopkeeperId: '', ownership: '' });
-    setActivePage('stock-categories');
-  };
-  const openStockCategoryPage = (categoryName = '') => {
-    setCategoryFiltersOpen(false);
-    setStockFilters({ search: '', brand: '', category: categoryName, colour: '', status: '', shopkeeperId: '', ownership: '' });
-    setStockCategoryPage(categoryName || '__all__');
   };
   const handleLoadError = (error, fallback = 'Unable to load data right now') => {
     if (isSessionError(error)) {
@@ -1256,19 +1238,16 @@ function App() {
       if (tab === 'dashboard') set('dashboard', await authedFetch(`/dashboard${scoped}`));
       if (tab === 'shops') set('shops', await authedFetch('/shops'));
       if (tab === 'shopkeepers') set('shopkeepers', await authedFetch('/shopkeepers'));
-      if (tab === 'prices') {
-        if (role !== 'customer') await loadProductPage({ tab, page: productPager.page });
-      }
       if (tab === 'models') {
         if (role === 'customer') set('catalog', await api('/catalog'));
         else await loadProductPage({ tab, page: productPager.page });
       }
-      if (tab === 'stock' || tab === 'stock-categories') {
+      if (tab === 'stock') {
         await loadStockPage({
           stockPage: stockPager.page,
           currentShop,
           filters: stockFilters,
-          search: role === 'shopkeeper' && tab === 'stock' ? shopkeeperStockSearch : stockFilters.search,
+          search: stockFilters.search,
         });
       }
       if (tab === 'customers') {
@@ -1413,14 +1392,14 @@ function App() {
   }, [active, selectedShop, session?.token, authReady, shopCountDependency]);
 
   useEffect(() => {
-    if (!session || !authReady || role === 'customer' || !['prices', 'models'].includes(active)) return;
+    if (!session || !authReady || role === 'customer' || active !== 'models') return;
     loadProductPage({ tab: active, page: productPager.page, search: activeProductSearch });
   }, [active, activeProductSearch, productPager.page, productPager.limit, session?.token, authReady]);
 
   useEffect(() => {
-    if (!['stock', 'stock-categories'].includes(active)) return;
+    if (active !== 'stock') return;
     setStockPager((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
-  }, [deferredStockFilters, deferredShopkeeperStockSearch]);
+  }, [deferredStockFilters]);
 
   useEffect(() => {
     if (active !== 'customers') return;
@@ -1443,18 +1422,16 @@ function App() {
   }, [deferredReportsFilters]);
 
   useEffect(() => {
-    if (!session || !authReady || role === 'customer' || !['stock', 'stock-categories'].includes(active)) return;
-    const search = role === 'shopkeeper' && active === 'stock' ? deferredShopkeeperStockSearch : deferredStockFilters.search;
+    if (!session || !authReady || role === 'customer' || active !== 'stock') return;
     loadStockPage({
       stockPage: stockPager.page,
       filters: deferredStockFilters,
-      search,
+      search: deferredStockFilters.search,
     });
   }, [
     active,
     selectedShop,
     deferredStockFilters,
-    deferredShopkeeperStockSearch,
     stockPager.page,
     stockPager.limit,
     session?.token,
@@ -1607,10 +1584,10 @@ function App() {
       const reference = await api('/reference-data');
       setData((prev) => ({ ...prev, reference: cleanReferenceData(reference) }));
       const resolvedName = createdReference?.name || cleanName;
-      if (active === 'prices' && type === 'categories') {
+      if (active === 'stock' && type === 'categories') {
         setForms((prev) => ({ ...prev, product: { ...prev.product, category: resolvedName } }));
       }
-      if (active === 'prices' && type === 'colours') {
+      if (active === 'stock' && type === 'colours') {
         setForms((prev) => {
           const selected = prev.product.colours.split(',').map((item) => item.trim()).filter(Boolean);
           return selected.some((item) => sameText(item, resolvedName))
@@ -1622,6 +1599,36 @@ function App() {
       showToast(`${resolvedName} added`);
     } catch (error) {
       showToast(error.message || `Unable to add ${referenceLabel}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const editReferenceOption = async (type, id, name) => {
+    const referenceLabel = { categories: 'category', colours: 'colour', brands: 'brand' }[type] || type;
+    const cleanName = String(name || '').trim();
+    if (!cleanName) return showToast(`Enter a new name for ${referenceLabel}`);
+    try {
+      setSaving(true);
+      await authedFetch(`/reference-data/${type}/${id}`, { method: 'PUT', body: JSON.stringify({ name: cleanName }) });
+      await loadCore();
+      showToast(`${referenceLabel} renamed to ${cleanName}`);
+    } catch (error) {
+      showToast(error.message || `Unable to rename ${referenceLabel}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteReferenceOption = async (type, id) => {
+    const referenceLabel = { categories: 'category', colours: 'colour', brands: 'brand' }[type] || type;
+    try {
+      setSaving(true);
+      await authedFetch(`/reference-data/${type}/${id}`, { method: 'DELETE' });
+      await loadCore();
+      showToast(`${referenceLabel} archived successfully`);
+    } catch (error) {
+      showToast(error.message || `Unable to archive ${referenceLabel}`);
     } finally {
       setSaving(false);
     }
@@ -2003,6 +2010,7 @@ function App() {
       name: forms.product.full_model_list.trim(),
       brand: forms.product.brand.trim(),
       category: forms.product.category.trim(),
+      model: forms.product.model.trim(),
       official_price: numericPrice(forms.product.sale_price),
       purchase_price: numericPrice(forms.product.purchase_price),
       sale_price: numericPrice(forms.product.sale_price),
@@ -2053,6 +2061,7 @@ function App() {
         full_model_list: product.full_model_list || product.name || '',
         brand: product.brand || '',
         category: product.category || 'Display',
+        model: product.model || '',
         official_price: product.official_price || '',
         purchase_price: product.purchase_price || '',
         sale_price: product.sale_price || '',
@@ -2804,7 +2813,7 @@ function App() {
                 key={id} 
                 className={`relative ${isActive ? 'active' : ''}`} 
                 title={label}
-                onClick={() => { if (id === 'stock-categories') openStockCategoriesHub(); else setActivePage(id); setOpen(false); }}
+                onClick={() => { setActivePage(id); setOpen(false); }}
               >
                 {isActive && (
                   <motion.div 
@@ -3198,42 +3207,6 @@ function App() {
             </PageWrapper>
           )}
 
-          {active === 'prices' && (
-            <PageWrapper activeKey="prices" key="prices">
-              <PricesPage
-                role={role}
-                forms={forms}
-                reference={data.reference}
-                priceVisibility={data.priceVisibility}
-                newReference={newReference}
-                editingProductId={editingProductId}
-                saving={saving}
-                items={priceItems}
-                search={priceSearch}
-                pager={productPager}
-                loading={productPageLoading}
-                onSubmitProduct={submitProduct}
-                onProductFieldChange={(field, value) => setForms((prev) => ({ ...prev, product: { ...prev.product, [field]: value } }))}
-                onNewReferenceChange={setNewReference}
-                onAddReferenceOption={addReferenceOption}
-                onCancelEdit={() => { setEditingProductId(''); setForms((prev) => ({ ...prev, product: initialForms.product })); }}
-                onExportProducts={() => exportCsv('products')}
-                onSearchChange={(value) => { setProductPager((prev) => ({ ...prev, page: 1 })); setPriceSearch(value); }}
-                onPageChange={(page) => setProductPager((prev) => ({ ...prev, page }))}
-                onViewDetails={setSelectedProductDetails}
-                onEditProduct={editProduct}
-                onDeleteProduct={deleteProduct}
-                productName={productName}
-                fullModelList={fullModelList}
-                priceLabel={priceLabel}
-                FormPanel={FormPanel}
-                Input={Input}
-                Select={Select}
-                CardGrid={CardGrid}
-              />
-            </PageWrapper>
-          )}
-
           {active === 'models' && (
             <PageWrapper activeKey="models" key="models">
               <ModelsPage
@@ -3265,13 +3238,8 @@ function App() {
                 myInventoryQuantity={myInventoryQuantity}
                 updateStock={updateStock}
                 setTransferDrawerOpen={setTransferDrawerOpen}
-                openStockCategoriesHub={openStockCategoriesHub}
-                shopkeeperStockSearch={shopkeeperStockSearch}
-                setShopkeeperStockSearch={setShopkeeperStockSearch}
                 stockFilters={stockFilters}
                 setStockFilters={setStockFilters}
-                shopkeeperStockItems={shopkeeperStockItems}
-                stockWithOwnership={stockWithOwnership}
                 stockPager={stockPager}
                 pageLoading={pageLoading}
                 setStockPager={setStockPager}
@@ -3279,246 +3247,24 @@ function App() {
                 productName={productName}
                 fullModelList={fullModelList}
                 priceLabel={priceLabel}
+                onSubmitProduct={submitProduct}
+                onEditProduct={editProduct}
+                onDeleteProduct={deleteProduct}
+                onAddReferenceOption={addReferenceOption}
+                onEditReferenceOption={editReferenceOption}
+                onDeleteReferenceOption={deleteReferenceOption}
+                editingProductId={editingProductId}
+                setEditingProductId={setEditingProductId}
+                saving={saving}
+                setSaving={setSaving}
+                initialForms={initialForms}
+                exportCsv={exportCsv}
+                stockWithOwnership={stockWithOwnership}
                 FormPanel={FormPanel}
                 Input={Input}
                 Select={Select}
                 Empty={Empty}
               />
-            </PageWrapper>
-          )}
-
-          {active === 'stock-categories' && (
-            <PageWrapper activeKey="stock-categories" key="stock-categories">
-              <section className="space stock-categories-page">
-                {!stockCategoryPage ? (
-                  <>
-                <section className="stock-categories-hero">
-                  <div>
-                    <span className="stock-eyebrow">Inventory library</span>
-                    <h2>Open a dedicated category page</h2>
-                    <p>Each stock category has its own page for filters, exports, inventory results, and purchase history.</p>
-                  </div>
-                  <div className="stock-hero-actions">
-                    <button className="primary" type="button" onClick={() => setNewReference({ type: 'categories', name: '' })}><Plus size={16} /> Add category</button>
-                    <button className="soft" type="button" onClick={() => setActivePage('stock')}><Package size={16} /> Manage stock</button>
-                  </div>
-                </section>
-
-                {newReference.type === 'categories' && (
-                  <section className="stock-section-card category-create-panel">
-                    <div className="category-create-copy">
-                      <span className="category-icon"><Plus size={20} /></span>
-                      <div>
-                        <span className="stock-eyebrow">New category</span>
-                        <h2>Add a stock category</h2>
-                        <p>The category becomes available in product forms, stock filters, category pages, and the customer catalog.</p>
-                      </div>
-                    </div>
-                    <form
-                      className="category-create-form"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        addReferenceOption('categories', newReference.name);
-                      }}
-                    >
-                      <Input
-                        label="Category name"
-                        autoFocus
-                        maxLength={80}
-                        placeholder="Example: Charging Port"
-                        value={newReference.name}
-                        onChange={(name) => setNewReference({ type: 'categories', name })}
-                      />
-                      <button className="primary" type="submit" disabled={saving}><Plus size={16} /> {saving ? 'Adding...' : 'Add category'}</button>
-                      <button className="soft" type="button" disabled={saving} onClick={() => setNewReference({ type: '', name: '' })}>Cancel</button>
-                    </form>
-                  </section>
-                )}
-
-                <section className="inventory-ownership-summary">
-                  <article className="ownership-summary-card total">
-                    <span>Stock available to you</span>
-                    <strong>{accessibleInventoryQuantity}</strong>
-                    <small>Warehouse, branch, and assigned inventory you can access</small>
-                  </article>
-                  <article className="ownership-summary-card owner">
-                    <span>Main warehouse stock</span>
-                    <strong>{stableWarehouseInventoryQuantity}</strong>
-                    <small>Inventory currently stored in the central warehouse</small>
-                  </article>
-                  <article className="ownership-summary-card mine">
-                    <span>{role === 'shopkeeper' ? 'My assigned stock' : 'Shopkeeper stock'}</span>
-                    <strong>{role === 'shopkeeper' ? myInventoryQuantity : assignedInventoryQuantity}</strong>
-                    <small>{role === 'shopkeeper' ? 'Inventory assigned directly to your login' : 'Inventory assigned directly to shopkeepers'}</small>
-                  </article>
-                </section>
-
-                <section className="stock-section-card category-browser">
-                  <div className="stock-section-heading">
-                    <div>
-                      <span className="stock-eyebrow">Category pages</span>
-                      <h2>Choose a stock category</h2>
-                    </div>
-                    <span className="category-result-count">{data.reference.categories.length} categories</span>
-                  </div>
-                  <div className="category-search-row">
-                    <div className="searchbox">
-                      <Search size={18} />
-                      <input
-                        placeholder="Search categories"
-                        value={categorySearch}
-                        onChange={(event) => setCategorySearch(event.target.value)}
-                      />
-                    </div>
-                    <span>{visibleCategoryStats.length} pages shown</span>
-                  </div>
-                  <div className="category-card-grid">
-                    {visibleCategoryStats.map((category) => (
-                      <button
-                        key={category.name || 'all-categories'}
-                        type="button"
-                        className="category-card"
-                        onClick={() => openStockCategoryPage(category.name)}
-                      >
-                        <span className="category-icon"><Package size={20} /></span>
-                        <span className="category-card-copy">
-                          <b>{category.label}</b>
-                          <small>{category.products} products</small>
-                        </span>
-                        <span className="category-quantity"><b>{category.quantity}</b><small>pieces</small></span>
-                        <ChevronRight className="category-open-icon" size={18} />
-                      </button>
-                    ))}
-                  </div>
-                  {!visibleCategoryStats.length && <Empty title="No category matches your search" />}
-                </section>
-                  </>
-                ) : (
-                  <>
-                    <section className="stock-categories-hero category-detail-hero">
-                      <div className="category-detail-copy">
-                        <button className="category-back-button" type="button" onClick={openStockCategoriesHub}><ArrowLeft size={16} /> Back to categories</button>
-                        <span className="stock-eyebrow">Category models</span>
-                        <h2>{selectedCategoryStat?.label || 'Stock category'}</h2>
-                        <p>Showing only {selectedCategoryStat?.label || 'this category'} models and their available stock.</p>
-                      </div>
-                      <span className="category-result-count">{selectedCategoryStat?.products || 0} models</span>
-                    </section>
-                  </>
-                )}
-
-                {stockCategoryPage && (
-                  <>
-                <section className="stock-section-card export-tools category-detail-hidden">
-                  <div className="stock-section-heading">
-                    <div>
-                      <span className="stock-eyebrow">Category reports</span>
-                      <h2>Export {selectedCategoryStat?.label || 'stock'}</h2>
-                    </div>
-                    <p>Exports follow this category page and your selected filters.</p>
-                  </div>
-                  <div className="export-action-grid">
-                    <button type="button" className="export-action-card" onClick={() => exportCsv('products')}>
-                      <span><Download size={18} /></span><b>All products</b><small>Complete products and models list</small>
-                    </button>
-                    <button type="button" className="export-action-card" onClick={() => {
-                      if (!stockFilters.brand) return showToast('Select a brand in filters first to export brand-wise stock');
-                      exportCsv('stock', { brand: stockFilters.brand, category: selectedCategoryStat?.name || '' });
-                    }}>
-                      <span><Download size={18} /></span><b>Brand-wise stock</b><small>Export the selected brand</small>
-                    </button>
-                    <button type="button" className="export-action-card" onClick={() => {
-                      exportCsv('stock', { category: selectedCategoryStat?.name || '' });
-                    }}>
-                      <span><Download size={18} /></span><b>{selectedCategoryStat?.name ? 'This category' : 'All stock'}</b><small>Export this category page</small>
-                    </button>
-                    <button type="button" className="export-action-card" onClick={() => {
-                      if (role === 'superadmin' && !stockFilters.shopkeeperId) return showToast('Select a shopkeeper first to export shopkeeper-wise stock');
-                      exportCsv('stock', { shopkeeperId: stockFilters.shopkeeperId, category: selectedCategoryStat?.name || '' });
-                    }}>
-                      <span><Download size={18} /></span><b>Shopkeeper stock</b><small>Export assigned inventory</small>
-                    </button>
-                  </div>
-                </section>
-
-                <section className="category-model-section">
-                  <div className="stock-section-heading">
-                    <div>
-                      <span className="stock-eyebrow">{selectedCategoryStat?.label || 'Category'} inventory</span>
-                      <h2>Matching stock</h2>
-                    </div>
-                    <div className="category-model-toolbar">
-                      <span className="category-result-count">{stockPager.loaded ? stockPager.total : visibleStock.length} models</span>
-                      <div className="category-filter-control">
-                        <button
-                          className={`category-filter-button ${activeCategoryFilterCount ? 'active' : ''}`}
-                          type="button"
-                          aria-expanded={categoryFiltersOpen}
-                          onClick={() => setCategoryFiltersOpen((open) => !open)}
-                        >
-                          <ListFilter size={17} />
-                          <span>Filter</span>
-                          {activeCategoryFilterCount > 0 && <b>{activeCategoryFilterCount}</b>}
-                        </button>
-                        {categoryFiltersOpen && (
-                          <div className="category-filter-popover">
-                            <div className="category-filter-popover-head">
-                              <div><b>Filter models</b><small>{selectedCategoryStat?.label || 'Category'} only</small></div>
-                              <button className="icon" type="button" aria-label="Close filters" onClick={() => setCategoryFiltersOpen(false)}><X size={16} /></button>
-                            </div>
-                            <div className="category-filter-fields">
-                              <Input label="Search model" value={stockFilters.search} onChange={(v) => setStockFilters({ ...stockFilters, search: v })} />
-                              <Select label="Brand" value={stockFilters.brand} onChange={(v) => setStockFilters({ ...stockFilters, brand: v })} options={data.reference.brands.map((item) => [item.name, item.name])} placeholder="All brands" />
-                              <Select label="Colour" value={stockFilters.colour} onChange={(v) => setStockFilters({ ...stockFilters, colour: v })} options={data.reference.colours.map((item) => [item.name, item.name])} placeholder="All colours" />
-                              <Select label="Stock status" value={stockFilters.status} onChange={(v) => setStockFilters({ ...stockFilters, status: v })} options={[['in_stock', 'In Stock'], ['out_of_stock', 'Out of Stock']]} placeholder="All status" />
-                              <Select
-                                label="Inventory source"
-                                value={stockFilters.ownership}
-                                onChange={(v) => setStockFilters({ ...stockFilters, ownership: v })}
-                                options={[['owner', 'Main warehouse stock'], [role === 'shopkeeper' ? 'mine' : 'shopkeeper', role === 'shopkeeper' ? 'My stock' : 'Shopkeeper stock']]}
-                                placeholder="All available"
-                              />
-                            </div>
-                            <div className="category-filter-actions">
-                              <button className="soft" type="button" onClick={() => setStockFilters({ search: '', brand: '', category: selectedCategoryStat?.name || '', colour: '', status: '', shopkeeperId: '', ownership: '' })}>Clear</button>
-                              <button className="primary" type="button" onClick={() => setCategoryFiltersOpen(false)}>Show {visibleStock.length} models</button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  {visibleStock.length ? (
-                    <div className="table panel stock-results-table inventory-stock-table category-model-table">
-                      {visibleStock.map((item) => (
-                        <div className="row" key={item.id}>
-                          <div className="inventory-primary">
-                            <div className="w-10 h-10 rounded-lg bg-teal/10 text-teal flex items-center justify-center shrink-0"><Smartphone size={18} /></div>
-                            <span>
-                              <b>{productName(item)}</b>
-                              <small>{joinUniqueText([item.brand, !shopId ? item.shop_name : ''], 'No brand')}</small>
-                              <span className="model-compatible-preview" title={fullModelList(item)}><b>Compatible:</b> {fullModelList(item) || 'No compatible models listed'}</span>
-                            </span>
-                          </div>
-                          <span className="inventory-metric category-column"><small>Category</small><strong>{item.category || 'Mobile'}</strong></span>
-                          <span className="inventory-metric"><small>Sale price</small><strong>{priceLabel(item.sale_price)}</strong></span>
-                          <div className="inventory-balance">
-                            <small>Total available: <b>{item.quantity} pcs</b></small>
-                            <div className="inventory-owner-badges">
-                              <span className="owner-stock-chip">Main warehouse <b>{item.owner_quantity}</b></span>
-                              <span className="my-stock-chip">{role === 'shopkeeper' ? 'My stock' : 'Shopkeepers'} <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b></span>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <Empty title="No stock matches these filters" />}
-                  <Pagination meta={stockPager} loading={pageLoading.stock} onPageChange={(page) => setStockPager((prev) => ({ ...prev, page }))} />
-                </section>
-
-                  </>
-                )}
-              </section>
             </PageWrapper>
           )}
 
