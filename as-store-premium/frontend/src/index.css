@@ -4050,6 +4050,7 @@ button:disabled {
   gap: 20px;
   padding: 18px 20px;
   position: relative;
+  color: var(--ink-soft);
   border-color: rgba(148, 163, 184, 0.22);
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.78));
 }
@@ -4073,6 +4074,17 @@ button:disabled {
 
 .inventory-stock-table .row:hover::before {
   opacity: 1;
+}
+
+.drawer-stock-row b {
+  color: var(--ink) !important;
+}
+
+.drawer-stock-row small {
+  display: block;
+  color: var(--muted) !important;
+  font-size: 0.75rem;
+  margin-top: 2px;
 }
 
 .inventory-primary {

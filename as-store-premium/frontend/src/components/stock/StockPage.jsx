@@ -202,8 +202,14 @@ export default function StockPage({
   // Determine current stock item metrics for selected product
   const getStockMetricPreview = () => {
     if (!forms.stock.product_id) return null;
-    const match = stockWithOwnership.find(item => String(item.product_id) === String(forms.stock.product_id));
-    return match || { quantity: 0, owner_quantity: 0, my_quantity: 0 };
+    const matches = stockWithOwnership.filter(item => String(item.product_id) === String(forms.stock.product_id));
+    if (!matches.length) return { quantity: 0, owner_quantity: 0, my_quantity: 0, shopkeeper_quantity: 0 };
+    return matches.reduce((total, item) => ({
+      quantity: total.quantity + Number(item.quantity || 0),
+      owner_quantity: total.owner_quantity + Number(item.owner_quantity || 0),
+      my_quantity: total.my_quantity + Number(item.my_quantity || 0),
+      shopkeeper_quantity: total.shopkeeper_quantity + Number(item.shopkeeper_quantity || 0),
+    }), { quantity: 0, owner_quantity: 0, my_quantity: 0, shopkeeper_quantity: 0 });
   };
   const stockPreview = getStockMetricPreview();
 
@@ -824,6 +830,7 @@ export default function StockPage({
           {stockWithOwnership.map((item) => {
             const isLowStock = item.quantity > 0 && item.quantity <= (data.shops.find(s => s.id === item.shop_id)?.low_stock_threshold || 5);
             const isOutOfStock = Number(item.quantity) === 0;
+            const isWarehouseRow = item.location_type === 'warehouse' || String(item.shop_id) === String(data.warehouse?.id);
 
             return (
               <div 
@@ -834,7 +841,7 @@ export default function StockPage({
                   gridTemplateColumns: '3fr 1.5fr 1.5fr 1.5fr 2fr 2fr 1.5fr', 
                   alignItems: 'center', 
                   padding: '12px 16px', 
-                  borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  borderBottom: '1px solid rgba(226,232,240,0.8)',
                   transition: 'background 0.15s ease'
                 }}
               >
@@ -845,9 +852,12 @@ export default function StockPage({
                     <Smartphone size={16} />
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <b style={{ fontSize: '14px', color: '#fff' }}>{productName(item)}</b>
-                    <small style={{ opacity: 0.6, fontSize: '11px', display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
-                      <span style={{ padding: '2px 6px', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', fontSize: '10px', fontWeight: 600 }}>{item.brand}</span>
+                    <b style={{ fontSize: '14px', color: 'var(--ink)', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{productName(item)}</b>
+                    {fullModelList(item) && fullModelList(item) !== productName(item) && (
+                      <small style={{ color: 'var(--muted-strong)', fontSize: '11px', lineHeight: 1.3, marginTop: '2px', overflowWrap: 'anywhere' }}>{fullModelList(item)}</small>
+                    )}
+                    <small style={{ color: 'var(--muted)', fontSize: '11px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+                      <span style={{ padding: '2px 6px', background: 'rgba(15,23,42,0.06)', color: 'var(--ink-soft)', borderRadius: '4px', fontSize: '10px', fontWeight: 700 }}>{item.brand || 'No brand'}</span>
                       {!shopId && <span style={{ opacity: 0.7 }}>· {item.shop_name}</span>}
                     </small>
                   </div>
@@ -861,20 +871,20 @@ export default function StockPage({
                 </span>
 
                 {/* Specific Model Code */}
-                <span style={{ fontSize: '13px', opacity: 0.8 }}>
+                <span style={{ fontSize: '13px', color: 'var(--ink-soft)' }}>
                   {item.model || <span style={{ opacity: 0.4 }}>—</span>}
                 </span>
 
                 {/* Colours Tagged */}
-                <span style={{ fontSize: '12px', opacity: 0.8 }}>
+                <span style={{ fontSize: '12px', color: 'var(--ink-soft)' }}>
                   {Array.isArray(item.colours) && item.colours.length > 0 ? (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                       {item.colours.map((col, idx) => (
-                        <span key={idx} style={{ padding: '2px 6px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '9px' }}>{col}</span>
+                        <span key={idx} style={{ padding: '2px 6px', background: 'rgba(15,23,42,0.06)', border: '1px solid rgba(148,163,184,0.25)', borderRadius: '4px', fontSize: '9px', color: 'var(--ink-soft)' }}>{col}</span>
                       ))}
                     </div>
                   ) : (
-                    <span style={{ opacity: 0.4 }}>No colours</span>
+                    <span style={{ color: 'var(--muted)' }}>No colours</span>
                   )}
                 </span>
 
@@ -882,7 +892,7 @@ export default function StockPage({
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <strong style={{ fontSize: '13px', color: '#10b981' }}>{priceLabel(item.sale_price)}</strong>
                   {role === 'superadmin' && item.purchase_price && (
-                    <small style={{ fontSize: '10px', opacity: 0.5 }}>Cost: {priceLabel(item.purchase_price)}</small>
+                    <small style={{ fontSize: '10px', color: 'var(--muted)' }}>Cost: {priceLabel(item.purchase_price)}</small>
                   )}
                 </div>
 
@@ -897,8 +907,8 @@ export default function StockPage({
                       <b style={{ color: '#14b8a6' }}>{item.quantity} pcs</b>
                     )}
                   </span>
-                  <small style={{ fontSize: '10px', opacity: 0.5, marginTop: '2px' }}>
-                    W: <b>{item.owner_quantity}</b> · My Shop: <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b>
+                  <small style={{ fontSize: '10px', color: 'var(--muted)', marginTop: '2px' }}>
+                    {isWarehouseRow ? 'Warehouse' : 'Owner'}: <b>{item.owner_quantity}</b> - {role === 'shopkeeper' ? 'My branch' : 'Assigned'}: <b>{role === 'shopkeeper' ? item.my_quantity : item.shopkeeper_quantity}</b>
                   </small>
                 </div>
 
@@ -918,17 +928,18 @@ export default function StockPage({
                       }));
                       window.scrollTo({ top: 120, behavior: 'smooth' });
                     }}
-                    style={{ padding: '6px 10px', fontSize: '11px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', color: '#14b8a6' }}
+                    style={{ padding: '6px 10px', fontSize: '11px', background: 'rgba(20,184,166,0.08)', border: '1px solid rgba(20,184,166,0.24)', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', color: '#0f766e', fontWeight: 800 }}
                   >
                     Set Stock
                   </button>
                   <button 
                     type="button" 
-                    title="Edit Product Details"
+                    title={role === 'superadmin' ? 'Edit product price' : 'Edit product details'}
                     onClick={() => onEditProduct(item)}
-                    style={{ padding: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', cursor: 'pointer', color: 'rgba(255,255,255,0.7)' }}
+                    style={{ padding: role === 'superadmin' ? '6px 10px' : '6px', background: 'rgba(15,23,42,0.04)', border: '1px solid rgba(148,163,184,0.28)', borderRadius: '6px', cursor: 'pointer', color: 'var(--ink-soft)', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 800 }}
                   >
                     <Edit3 size={12} />
+                    {role === 'superadmin' && 'Edit Price'}
                   </button>
                   {role === 'superadmin' && (
                     <button 

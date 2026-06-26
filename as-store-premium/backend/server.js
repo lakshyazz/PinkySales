@@ -947,6 +947,8 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
     const shopId = requestedShopId
       ? await assertShopReadAccess(req, requestedShopId)
       : (isShopStaffRole(req.user.role) ? Number(req.user.shop_id) : null);
+    const includeWarehouse = isShopStaffRole(req.user.role) && String(req.query.includeWarehouse || '').toLowerCase() === 'true';
+    const warehouse = includeWarehouse ? await getWarehouse() : null;
     const pagination = parsePagination(req.query);
     const visibility = await getPriceVisibility();
     const extraPrices = req.user.role === 'superadmin'
@@ -972,7 +974,10 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
     if (req.query.ownership === 'owner') where.push('ib.assigned_user_id IS NULL');
     if (req.query.ownership === 'shopkeeper') where.push('ib.assigned_user_id IS NOT NULL');
     if (req.query.ownership === 'mine') where.push(`ib.assigned_user_id = ${Number(req.user.id)}`);
-    if (shopId) {
+    if (shopId && includeWarehouse && warehouse?.id && Number(warehouse.id) !== Number(shopId)) {
+      where.push('(ib.shop_id = ? OR ib.shop_id = ?)');
+      whereParams.push(shopId, Number(warehouse.id));
+    } else if (shopId) {
       where.push('ib.shop_id = ?');
       whereParams.push(shopId);
     }

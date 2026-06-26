@@ -1021,6 +1021,7 @@ function App() {
       stockParams.set('page', String(stockPage));
       stockParams.set('limit', String(stockPager.limit));
       stockParams.set('includeSummary', 'true');
+      if (role === 'shopkeeper') stockParams.set('includeWarehouse', 'true');
       const [stockResponse, shopkeepers] = await Promise.all([
         authedFetch(`/stock?${stockParams.toString()}`),
         role === 'superadmin' && !data.shopkeepers.length ? authedFetch('/shopkeepers') : Promise.resolve(data.shopkeepers),
@@ -1288,8 +1289,13 @@ function App() {
     setEditShopForm({ name: shop.name || '', area: shop.area || '', address: shop.address || '', phone: shop.phone || '' });
     setDetailedShopData({ loading: true, stock: [], customers: [], sales: [], pending: [], reports: null });
     try {
+      const stockParams = new URLSearchParams({
+        shopId: String(shop.id),
+        page: '1',
+        limit: '500',
+      });
       const [stock, customers, sales, pending, reports] = await Promise.all([
-        authedFetch(`/stock?shopId=${shop.id}`),
+        authedFetch(`/stock?${stockParams.toString()}`),
         authedFetch(`/customers?shopId=${shop.id}`),
         authedFetch(`/sales?shopId=${shop.id}`),
         authedFetch(`/pending-payments?shopId=${shop.id}`),
@@ -1297,7 +1303,7 @@ function App() {
       ]);
       setDetailedShopData({
         loading: false,
-        stock,
+        stock: getPaginatedRows(stock),
         customers,
         sales,
         pending: groupPendingPayments(pending),
@@ -2045,6 +2051,7 @@ function App() {
       setEditingProductId('');
       showToast(editingProductId ? 'Product prices and details updated' : openingStock > 0 ? 'Product added with opening stock' : 'Product price added');
       await loadCore();
+      if (active === 'stock') await loadTab('stock', shopId);
     } catch (error) {
       showToast(error.message || 'Unable to add product right now');
     } finally {
@@ -3964,8 +3971,11 @@ function App() {
                               <span>Available</span>
                             </div>
                             {detailedShopData.stock.map(item => (
-                              <div className="row text-sm hover:bg-slate-50/40" key={item.id} style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
-                                <span><b title={fullModelList(item)}>{productName(item)}</b><small>{item.brand}</small></span>
+                              <div className="row drawer-stock-row text-sm hover:bg-slate-50/40" key={item.id} style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
+                                <span>
+                                  <b title={fullModelList(item)}>{productName(item)}</b>
+                                  <small>{[item.brand, item.shop_name].filter(Boolean).join(' - ')}</small>
+                                </span>
                                 <span className="font-semibold text-slate-600">{priceLabel(item.sale_price)}</span>
                                 <strong className={`status-badge ${item.quantity <= 3 ? 'low-stock' : 'stock-ok'}`}>{item.quantity} pcs</strong>
                               </div>
