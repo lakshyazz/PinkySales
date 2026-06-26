@@ -1171,6 +1171,8 @@ app.get('/api/inventory-batches', authenticateToken, requireShopStaff, async (re
       "COALESCE(p.full_model_list, '')",
       "COALESCE(p.brand, '')",
       "COALESCE(p.category, '')",
+      "COALESCE(p.model, '')",
+      "COALESCE(p.description, '')",
       "COALESCE(ib.colour, '')",
       "COALESCE(u.name, '')",
       "COALESCE(sh.name, '')",
@@ -1350,9 +1352,12 @@ app.get('/api/sales', authenticateToken, requireShopStaff, async (req, res) => {
     "COALESCE(p.full_model_list, '')",
     "COALESCE(p.brand, '')",
     "COALESCE(p.category, '')",
+    "COALESCE(p.model, '')",
+    "COALESCE(p.description, '')",
     "COALESCE(sh.name, '')",
     "COALESCE(sa.price_type, '')",
     "COALESCE(sa.payment_mode, '')",
+    "COALESCE(sa.notes, '')",
   ]);
   appendExactFilter(where, params, req.query.priceType, 'sa.price_type = ?');
   appendExactFilter(where, params, req.query.paymentMode, 'sa.payment_mode = ?');
@@ -1686,7 +1691,10 @@ app.get('/api/pending-payments', authenticateToken, requireShopStaff, async (req
     "COALESCE(p.full_model_list, '')",
     "COALESCE(p.brand, '')",
     "COALESCE(p.category, '')",
+    "COALESCE(p.model, '')",
+    "COALESCE(p.description, '')",
     "COALESCE(sh.name, '')",
+    "COALESCE(sa.notes, '')",
   ]);
   if (hasQueryValue(req.query.date)) {
     where.push('sa.due_date = ?');
@@ -1895,7 +1903,34 @@ app.get('/api/catalog', async (req, res) => {
   const { shopId, search = '', brand = '', category = '', colour = '', min = 0, max = 9999999 } = req.query;
   const minPrice = String(min).trim() === '' || !Number.isFinite(Number(min)) ? 0 : Number(min);
   const maxPrice = String(max).trim() === '' || !Number.isFinite(Number(max)) ? 9999999 : Number(max);
-  const rows = await allRecords(`
+  const params = [];
+  if (shopId) {
+    params.push(Number(shopId));
+  }
+  const where = ['p.is_active = 1', 'p.name IS NOT NULL'];
+  appendSearchFilter(where, params, search, [
+    'p.name',
+    "COALESCE(p.short_name, '')",
+    "COALESCE(p.full_model_list, '')",
+    "COALESCE(p.brand, '')",
+    "COALESCE(p.category, '')",
+    "COALESCE(p.model, '')",
+    "COALESCE(p.description, '')",
+    "COALESCE(array_to_string(p.colours, ','), '')",
+  ]);
+  appendExactFilter(where, params, brand, 'p.brand = ?');
+  appendExactFilter(where, params, category, 'LOWER(TRIM(p.category)) = LOWER(TRIM(?))');
+  if (hasQueryValue(colour)) {
+    where.push(`EXISTS (
+      SELECT 1 FROM UNNEST(p.colours) AS product_colour
+      WHERE LOWER(TRIM(product_colour)) = LOWER(TRIM(?))
+    )`);
+    params.push(String(colour).trim());
+  }
+  where.push('p.retail_price BETWEEN ? AND ?');
+  params.push(minPrice, maxPrice);
+
+  const querySql = `
     SELECT p.id, p.name, p.short_name, p.full_model_list, p.brand, p.category,
       p.retail_price, p.description, p.colours,
       STRING_AGG(CASE WHEN st.quantity > 0 THEN sh.name || ' (' || st.quantity || ')' END, ', ') AS available_shops,
@@ -1903,33 +1938,12 @@ app.get('/api/catalog', async (req, res) => {
     FROM products p
     LEFT JOIN stock st ON st.product_id = p.id ${shopId ? 'AND st.shop_id = ?' : ''}
     LEFT JOIN shops sh ON sh.id = st.shop_id
-    WHERE p.is_active = 1
-      AND p.name IS NOT NULL
-      AND (p.name ILIKE ? OR COALESCE(p.short_name, '') ILIKE ? OR COALESCE(p.full_model_list, '') ILIKE ? OR p.brand ILIKE ?)
-      AND (? = '' OR p.brand = ?)
-      AND (? = '' OR LOWER(TRIM(p.category)) = LOWER(TRIM(?)))
-      AND (? = '' OR EXISTS (
-        SELECT 1 FROM UNNEST(p.colours) AS product_colour
-        WHERE LOWER(TRIM(product_colour)) = LOWER(TRIM(?))
-      ))
-      AND p.retail_price BETWEEN ? AND ?
+    WHERE ${where.join(' AND ')}
     GROUP BY p.id
     ORDER BY p.brand, COALESCE(p.short_name, p.name)
-  `, [
-    ...(shopId ? [shopId] : []),
-    `%${search}%`,
-    `%${search}%`,
-    `%${search}%`,
-    `%${search}%`,
-    brand,
-    brand,
-    category,
-    category,
-    colour,
-    colour,
-    minPrice,
-    maxPrice,
-  ]);
+  `;
+
+  const rows = await allRecords(querySql, params);
   res.json(rows);
 });
 
@@ -1956,6 +1970,8 @@ app.get('/api/reports', authenticateToken, requireShopStaff, async (req, res) =>
     "COALESCE(p.full_model_list, '')",
     "COALESCE(p.brand, '')",
     "COALESCE(p.category, '')",
+    "COALESCE(p.model, '')",
+    "COALESCE(p.description, '')",
     "COALESCE(sh.name, '')",
   ]);
   appendExactFilter(availabilityWhere, availabilityParams, req.query.brand, 'p.brand = ?');

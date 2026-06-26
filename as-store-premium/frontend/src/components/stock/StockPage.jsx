@@ -745,7 +745,7 @@ export default function StockPage({
         
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <SearchFilter
-            placeholder="Search stock..."
+            placeholder="Search brand, category, model, description, colour, or notes..."
             value={stockFilters.search}
             onChange={(val) => setStockFilters(prev => ({ ...prev, search: val }))}
           />
