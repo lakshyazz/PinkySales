@@ -86,8 +86,12 @@ const parsePagination = (query, options = {}) => {
 const appendSearchFilter = (where, params, search, columns) => {
   const query = cleanQueryText(search);
   if (!query) return;
-  where.push(`(${columns.map((column) => `${column} ILIKE ?`).join(' OR ')})`);
-  columns.forEach(() => params.push(`%${query}%`));
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return;
+  terms.forEach((term) => {
+    where.push(`(${columns.map((column) => `${column} ILIKE ?`).join(' OR ')})`);
+    columns.forEach(() => params.push(`%${term}%`));
+  });
 };
 const appendExactFilter = (where, params, value, sql) => {
   if (!hasQueryValue(value)) return;
@@ -212,6 +216,7 @@ const getProductsForRole = async (role, query = {}) => {
     "COALESCE(category, '')",
     "COALESCE(model, '')",
     "COALESCE(description, '')",
+    "COALESCE(array_to_string(colours, ','), '')",
   ]);
   appendExactFilter(where, params, query.brand, 'brand = ?');
   appendExactFilter(where, params, query.category, 'LOWER(TRIM(category)) = LOWER(TRIM(?))');
@@ -983,6 +988,9 @@ app.get('/api/stock', authenticateToken, requireShopStaff, async (req, res) => {
       "COALESCE(p.model, '')",
       "COALESCE(p.description, '')",
       "COALESCE(sh.name, '')",
+      "COALESCE(array_to_string(p.colours, ','), '')",
+      "COALESCE(ib.colour, '')",
+      "COALESCE(ib.notes, '')",
     ]);
     appendExactFilter(where, whereParams, req.query.brand, 'p.brand = ?');
     appendExactFilter(where, whereParams, req.query.category, 'LOWER(TRIM(p.category)) = LOWER(TRIM(?))');
@@ -1166,6 +1174,8 @@ app.get('/api/inventory-batches', authenticateToken, requireShopStaff, async (re
       "COALESCE(ib.colour, '')",
       "COALESCE(u.name, '')",
       "COALESCE(sh.name, '')",
+      "COALESCE(array_to_string(p.colours, ','), '')",
+      "COALESCE(ib.notes, '')",
     ]);
     appendExactFilter(where, params, req.query.brand, 'p.brand = ?');
     appendExactFilter(where, params, req.query.category, 'LOWER(TRIM(p.category)) = LOWER(TRIM(?))');
